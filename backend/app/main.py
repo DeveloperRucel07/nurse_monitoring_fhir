@@ -41,11 +41,18 @@ async def get_patient(patient_id: str):
 
     return patient
 
+
 @app.get("/Patient")
-async def search_patients(family: Optional[str] = None):
-    """Sucht Patienten, optional nach Familienname."""
+async def search_patients(family: Optional[str] = None, given: Optional[str] = None, birthdate: Optional[str] = None):
+    """
+    Sucht Patienten, optional nach Familienname, Vorname und/oder Geburtsdatum.
+    """
     try:
-        bundle = fhir.search_patients(family)
+        bundle = fhir.search_patients(
+            family=family,
+            given=given,
+            birthdate=birthdate
+        )
     except requests.exceptions.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
 

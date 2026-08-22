@@ -26,12 +26,19 @@ class FHIRClient:
         response.raise_for_status()
         return response.json()
 
-    def search_patients(self, family: Optional[str] = None) -> Dict[str, Any]:
-        """Sucht Patienten, optional nach Familienname."""
+    def search_patients(self, family: Optional[str] = None, given: Optional[str] = None, birthdate: Optional[str] = None ) -> Dict[str, Any]:
+        """
+        Sucht Patienten, optional nach Familienname, Vorname und/oder Geburtsdatum.
+        Alle Parameter sind optional und werden kombiniert (UND-Verknüpfung).
+        """
         url = f"{self.base_url}/Patient"
         params = {}
         if family:
             params["family"] = family
+        if given:
+            params["given"] = given
+        if birthdate:
+            params["birthdate"] = birthdate
         response = requests.get(url, params=params, headers=self.headers)
         response.raise_for_status()
         return response.json()
