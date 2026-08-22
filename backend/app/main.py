@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import requests
 
-from app.fhir_ml.fhir.FHIRclient import FHIRClient
-from backend.app.models.models import PatientCreate
+from backend.app.fhir_ml.fhir.FHIRclient import FHIRClient
+from backend.app.models.models import ObservationCreate, ObservationCreate, PatientCreate
 
 app = FastAPI(
     title="Pflege-Monitoring FHIR API",
@@ -50,3 +50,69 @@ async def search_patients(family: Optional[str] = None):
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
 
     return bundle
+
+
+# ---------- Observation Endpunkte ----------
+
+@app.post("/Observation", status_code=status.HTTP_201_CREATED)
+async def create_observation(observation: ObservationCreate):
+    """Legt eine neue Observation im FHIR-Server an."""
+    observation_data = observation.model_dump(exclude_none=True)
+    observation_data["resourceType"] = "Observation"
+
+    try:
+        created = fhir.create_observation(observation_data)
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+
+    return created
+
+@app.get("/Observation/{observation_id}")
+async def get_observation(observation_id: str):
+    """Liest eine Observation anhand ihrer ID."""
+    try:
+        observation = fhir.get_observation(observation_id)
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+
+    return observation
+
+@app.get("/Observation")
+async def search_observations(subject: Optional[str] = None,patient_name: Optional[str] = None):
+    """
+    Sucht Observationen, optional gefiltert nach subject (z. B. subject=Patient/1)
+    oder nach Patientenname (z. B. patient_name=Mustermann).
+    """
+    try:
+        bundle = fhir.search_observations(
+            subject_reference=subject,
+            patient_name=patient_name
+        )
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+
+    return bundle
+
+@app.patch("/Observation/{observation_id}")
+async def patch_observation(observation_id: str, patch: List[Dict[str, Any]]):
+    """
+    Führt ein JSON Patch auf eine Observation aus.
+    Body-Beispiel: [{"op": "replace", "path": "/status", "value": "corrected"}]
+    """
+    try:
+        updated = fhir.patch_observation(observation_id, patch)
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    return updated
+
+@app.delete("/Observation/{observation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_observation(observation_id: str):
+    """
+    Löscht eine Observation.
+    Gibt 204 No Content zurück.
+    """
+    try:
+        fhir.delete_observation(observation_id)
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    # Kein Body bei 204
