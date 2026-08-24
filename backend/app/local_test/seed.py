@@ -59,6 +59,14 @@ LOINC_SYSTEM = "http://loinc.org"
 SNOMED_SYSTEM = "http://snomed.info/sct"
 ATC_SYSTEM = "http://www.whocc.no/atc"
 UCUM_SYSTEM = "http://unitsofmeasure.org"
+RISK_LABEL_SYSTEM = "http://example.org/fhir/CodeSystem/nursing-risk-label"
+
+RISK_LABEL_CODES = {
+    "fall": "nursing-risk-fall",
+    "pressure_ulcer": "nursing-risk-pressure-ulcer",
+    "pain_escalation": "nursing-risk-pain-escalation",
+    "clinical_deterioration": "nursing-risk-clinical-deterioration",
+}
 
 
 # ============================================================
@@ -241,6 +249,10 @@ class ClinicalProfile:
     morse_level: str
     gait_score: int
     gait_display: str
+
+    risk_labels: dict[str, int] = field(
+        default_factory=dict
+    )
 
     conditions: list[dict[str, Any]] = field(
         default_factory=list
@@ -504,6 +516,18 @@ class PatientGenerator:
             20: "Impaired",
         }[gait_score]
 
+        risk_labels = {
+            "fall": int(morse_score >= 45),
+            "pressure_ulcer": int(mobility_score >= 2),
+            "pain_escalation": int(pain_score >= 5),
+            "clinical_deterioration": int(
+                temperature >= 38.0
+                or heart_rate >= 100
+                or respiratory_rate >= 24
+                or oxygen_saturation <= 92
+            ),
+        }
+
         # ----------------------------------------------------
         # Conditions
         # ----------------------------------------------------
@@ -592,6 +616,7 @@ class PatientGenerator:
             morse_level=morse_level,
             gait_score=gait_score,
             gait_display=gait_display,
+            risk_labels=risk_labels,
             conditions=conditions,
             allergies=allergies,
             medications=medications,
@@ -720,6 +745,41 @@ class ObservationGenerator:
                         value_code,
                         value_display,
                         LOINC_SYSTEM,
+                    )
+                ]
+            },
+        }
+
+    @staticmethod
+    def risk_label_observation(
+        risk_type: str,
+        value: int,
+        patient_ref: str,
+        effective: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "Observation",
+            "status": "final",
+            "code": {
+                "coding": [
+                    make_coding(
+                        RISK_LABEL_CODES[risk_type],
+                        f"Synthetic label: {risk_type}",
+                        RISK_LABEL_SYSTEM,
+                    )
+                ]
+            },
+            "subject": {
+                "reference": patient_ref,
+            },
+            "effectiveDateTime": effective,
+            "valueCodeableConcept": {
+                "coding": [
+                    make_coding(
+                        "positive" if value else "negative",
+                        "Positive" if value else "Negative",
+                        RISK_LABEL_SYSTEM,
                     )
                 ]
             },
@@ -921,6 +981,16 @@ class ObservationGenerator:
                 effective,
             )
         )
+
+        for risk_type, value in profile.risk_labels.items():
+            observations.append(
+                cls.risk_label_observation(
+                    risk_type,
+                    value,
+                    patient_ref,
+                    effective,
+                )
+            )
 
         return observations
 

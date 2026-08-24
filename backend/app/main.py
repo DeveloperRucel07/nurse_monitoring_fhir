@@ -1,7 +1,17 @@
+from datetime import datetime
+
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import requests
+import joblib
+from backend.app.fhir_ml.ml.ml_utils import (
+    IncompleteFeaturesError,
+    load_model,
+    load_risk_models,
+    predict_patient_all_risks,
+    predict_patient,
+)
 
 from backend.app.fhir_ml.fhir.FHIRclient import FHIRClient
 from backend.app.models.models import ObservationCreate, ObservationCreate, PatientCreate
@@ -13,6 +23,10 @@ app = FastAPI(
 )
 
 fhir = FHIRClient()
+
+MODEL_PATH = "fall_risk_model.joblib"
+model = load_model(MODEL_PATH)
+RISK_MODELS = load_risk_models()
 
 
 # ---------- Endpunkte ----------
@@ -123,3 +137,165 @@ async def delete_observation(observation_id: str):
     except requests.exceptions.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     # Kein Body bei 204
+
+from datetime import datetime, timezone
+
+from fastapi import HTTPException
+
+
+@app.get("/Patient/{patient_id}/risk-assessment", response_model=dict,)
+async def get_risk_assessment(patient_id: str,):
+    """
+    Erstellt eine FHIR RiskAssessment-Ressource
+    für einen Patienten anhand des trainierten
+    Fallrisiko-Modells.
+    """
+    try:
+        result = predict_patient(
+            patient_id=patient_id,
+            fhir_client=fhir,
+            model=model,
+        )
+    except IncompleteFeaturesError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Risikobewertung wegen unvollständiger FHIR-Daten nicht möglich.",
+                "patient_id": exc.patient_id,
+                "missing_features": exc.missing_features,
+            },
+        ) from exc
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Patient nicht gefunden oder "
+                "nicht genügend FHIR-Daten "
+                "für die Risikobewertung vorhanden."
+            ),
+        )
+    prediction = result["prediction"]
+    prediction_value = prediction["prediction"]
+    risk_label = prediction["label"]
+    probability = prediction["probability"]
+    risk_assessment = {
+        "resourceType": "RiskAssessment",
+        "status": "final",
+        "subject": {"reference": f"Patient/{patient_id}"},
+        "occurrenceDateTime": (datetime.now(timezone.utc).isoformat()),
+        "prediction": [
+            {
+                "outcome": {
+                    "coding": [
+                        {
+                            "system": (
+                                "http://example.org/"
+                                "fhir/CodeSystem/fall-risk"
+                            ),
+
+                            "code": (
+                                "fall-risk-high"
+                                if prediction_value == 1
+                                else "fall-risk-low"
+                            ),
+
+                            "display": (
+                                "High fall risk"
+                                if prediction_value == 1
+                                else "Low fall risk"
+                            ),
+                        }
+                    ],
+                    "text": (
+                        "High fall risk"
+                        if prediction_value == 1
+                        else "Low fall risk"
+                    ),
+                },
+                "probabilityDecimal": (
+                    round(probability, 4)
+                    if probability is not None
+                    else None
+                ),
+            }
+        ],
+        "basis": [
+            {
+                "display": (
+                    "FHIR Patient and "
+                    "clinical Observation data"
+                )
+            }
+        ],
+        "note": [
+            {
+                "text": (
+                    "Automated synthetic ML-based "
+                    "fall risk assessment. "
+                    "This result is intended for "
+                    "software testing and does not "
+                    "replace clinical assessment."
+                )
+            }
+        ],
+    }
+    return risk_assessment
+
+
+@app.get("/Patient/{patient_id}/nursing-risk-assessment", response_model=dict)
+async def get_nursing_risk_assessment(patient_id: str):
+    """Erstellt eine gemeinsame Bewertung der verfügbaren Pflegerisiken."""
+    if not RISK_MODELS:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Keine Pflegerisikomodelle geladen.",
+        )
+    result = predict_patient_all_risks(
+        patient_id=patient_id,
+        fhir_client=fhir,
+        models=RISK_MODELS,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Patient/{patient_id} nicht gefunden.",
+        )
+    return {
+        "resourceType": "RiskAssessment",
+        "status": "final",
+        "subject": {"reference": f"Patient/{patient_id}"},
+        "occurrenceDateTime": datetime.now(timezone.utc).isoformat(),
+        "prediction": [
+            {
+                "outcome": {
+                    "text": risk_type,
+                },
+                "probabilityDecimal": assessment["probability"],
+                "extension": [
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/risk-status",
+                        "valueCode": assessment["status"],
+                    },
+                    {
+                        "url": "http://example.org/fhir/StructureDefinition/missing-features",
+                        "valueString": ", ".join(assessment["missing_features"]),
+                    },
+                ],
+            }
+            for risk_type, assessment in result["risks"].items()
+        ],
+        "basis": [
+            {
+                "display": "FHIR Patient and clinical Observation data",
+            }
+        ],
+        "note": [
+            {
+                "text": (
+                    "Automated synthetic nursing risk assessment. "
+                    "This result does not replace professional nursing assessment."
+                ),
+            }
+        ],
+    }
