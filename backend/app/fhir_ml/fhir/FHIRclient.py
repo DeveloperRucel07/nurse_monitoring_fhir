@@ -90,7 +90,12 @@ class FHIRClient:
         patch_data ist eine Liste von Operationen, z. B.:
         [{"op": "replace", "path": "/status", "value": "corrected"}]
         """
+        headers = {
+            "Content-Type": "application/json-patch+json",
+            "Accept": "application/fhir+json"
+        }
+
         url = f"{self.base_url}/Observation/{observation_id}"
-        response = requests.patch(url, json=patch_data, headers=self.headers)
+        response = requests.patch(url, json=patch_data, headers=headers)
         response.raise_for_status()
         return response.json()

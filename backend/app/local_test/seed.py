@@ -7,7 +7,7 @@ import random
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -26,9 +26,17 @@ FHIR_SERVER_URL = os.getenv(
     "http://localhost:8080/fhir",
 ).rstrip("/")
 
-FHIR_TIMEOUT = float(os.getenv("FHIR_TIMEOUT", "30"))
-FHIR_BATCH_SIZE = int(os.getenv("FHIR_BATCH_SIZE", "10"))
-FHIR_RETRIES = int(os.getenv("FHIR_RETRIES", "3"))
+FHIR_TIMEOUT = float(
+    os.getenv("FHIR_TIMEOUT", "30")
+)
+
+FHIR_RETRIES = int(
+    os.getenv("FHIR_RETRIES", "3")
+)
+
+FHIR_BATCH_SIZE = int(
+    os.getenv("FHIR_BATCH_SIZE", "10")
+)
 
 
 # ============================================================
@@ -44,36 +52,99 @@ logger = logging.getLogger("fhir-seed")
 
 
 # ============================================================
-# FHIR constants
+# Terminology systems
 # ============================================================
 
 LOINC_SYSTEM = "http://loinc.org"
+SNOMED_SYSTEM = "http://snomed.info/sct"
+ATC_SYSTEM = "http://www.whocc.no/atc"
 UCUM_SYSTEM = "http://unitsofmeasure.org"
 
 
+# ============================================================
+# LOINC
+# ============================================================
+
 LOINC = {
-    # Vital signs
     "HEART_RATE": "8867-4",
     "SYSTOLIC_BP": "8480-6",
     "DIASTOLIC_BP": "8462-4",
-    "BLOOD_PRESSURE_PANEL": "85354-9",
+    "BLOOD_PRESSURE": "85354-9",
     "TEMPERATURE": "8310-5",
     "RESPIRATORY_RATE": "9279-1",
     "OXYGEN_SATURATION": "2708-6",
 
-    # Mobility / fall risk
     "MOBILITY": "83186-7",
+
     "MORSE_FALL_TOTAL": "59460-6",
     "MORSE_FALL_LEVEL": "59461-4",
     "MORSE_GAIT": "59458-0",
+
+    # Pain
+    "PAIN_SEVERITY": "72514-3",
 }
+
+
+# ============================================================
+# Example clinical terminology
+#
+# These are synthetic/demo mappings for the generator.
+# Validate terminology against your organization's required
+# terminology version before using these in production.
+# ============================================================
+
+CONDITIONS = [
+    {
+        "code": "73211009",
+        "display": "Diabetes mellitus",
+        "system": SNOMED_SYSTEM,
+    },
+    {
+        "code": "429271000124103",
+        "display": "Pressure ulcer",
+        "system": SNOMED_SYSTEM,
+    },
+    {
+        "code": "38341003",
+        "display": "Hypertensive disorder",
+        "system": SNOMED_SYSTEM,
+    },
+]
+
+
+ALLERGIES = [
+    {
+        "code": "7986",
+        "display": "Penicillin",
+        "system": "http://snomed.info/sct",
+    },
+    {
+        "code": "227493005",
+        "display": "Shellfish",
+        "system": SNOMED_SYSTEM,
+    },
+]
+
+
+MEDICATIONS = [
+    {
+        "code": "A10BA02",
+        "display": "Metformin",
+        "system": ATC_SYSTEM,
+    },
+    {
+        "code": "C09AA05",
+        "display": "Ramipril",
+        "system": ATC_SYSTEM,
+    },
+]
 
 
 # ============================================================
 # Patient names
 # ============================================================
 
-FIRST_NAMES_MALE = [
+MALE_FIRST_NAMES = [
     "Max",
     "Peter",
     "Thomas",
@@ -86,7 +157,7 @@ FIRST_NAMES_MALE = [
     "Christian",
 ]
 
-FIRST_NAMES_FEMALE = [
+FEMALE_FIRST_NAMES = [
     "Anna",
     "Sophie",
     "Laura",
@@ -117,17 +188,43 @@ LAST_NAMES = [
     "Schröder",
 ]
 
+STREETS = [
+    "Hauptstraße",
+    "Bahnhofstraße",
+    "Dorfstraße",
+    "Gartenstraße",
+    "Schulstraße",
+    "Bergstraße",
+    "Lindenstraße",
+]
+
+CITIES = [
+    ("Berlin", "10115"),
+    ("Hamburg", "20095"),
+    ("München", "80331"),
+    ("Köln", "50667"),
+    ("Frankfurt", "60311"),
+    ("Leipzig", "04109"),
+    ("Kiel", "24103"),
+]
+
 
 # ============================================================
-# Dataclasses
+# Data classes
 # ============================================================
 
 @dataclass
-class PatientProfile:
+class ClinicalProfile:
+
     first_name: str
     last_name: str
     gender: str
     birth_date: str
+
+    street: str
+    house_number: int
+    postal_code: str
+    city: str
 
     systolic: int
     diastolic: int
@@ -136,143 +233,32 @@ class PatientProfile:
     respiratory_rate: int
     oxygen_saturation: int
 
+    pain_score: int
+
     mobility_score: int
 
-    morse_fall_score: int
-    morse_fall_level: str
+    morse_score: int
+    morse_level: str
     gait_score: int
     gait_display: str
 
+    conditions: list[dict[str, Any]] = field(
+        default_factory=list
+    )
 
-# ============================================================
-# FHIR client
-# ============================================================
+    allergies: list[dict[str, Any]] = field(
+        default_factory=list
+    )
 
-class FHIRClient:
-    def __init__(
-        self,
-        base_url: str,
-        timeout: float = 30,
-        retries: int = 3,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-        self.retries = retries
+    medications: list[dict[str, Any]] = field(
+        default_factory=list
+    )
 
-        self.session = requests.Session()
-
-        self.session.headers.update(
-            {
-                "Accept": "application/fhir+json",
-                "Content-Type": "application/fhir+json",
-            }
-        )
-
-    def _request(
-        self,
-        method: str,
-        endpoint: str,
-        **kwargs: Any,
-    ) -> requests.Response:
-
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
-
-        last_exception: Exception | None = None
-
-        for attempt in range(1, self.retries + 1):
-
-            try:
-                response = self.session.request(
-                    method,
-                    url,
-                    timeout=self.timeout,
-                    **kwargs,
-                )
-
-                # Retry only transient server errors.
-                if response.status_code >= 500:
-
-                    logger.warning(
-                        "FHIR server returned %s. Attempt %s/%s",
-                        response.status_code,
-                        attempt,
-                        self.retries,
-                    )
-
-                    if attempt < self.retries:
-                        time.sleep(2 ** (attempt - 1))
-                        continue
-
-                return response
-
-            except requests.RequestException as exc:
-
-                last_exception = exc
-
-                logger.warning(
-                    "FHIR request failed: %s. Attempt %s/%s",
-                    exc,
-                    attempt,
-                    self.retries,
-                )
-
-                if attempt < self.retries:
-                    time.sleep(2 ** (attempt - 1))
-
-        raise RuntimeError(
-            f"FHIR request failed after {self.retries} attempts"
-        ) from last_exception
-
-    def health_check(self) -> None:
-
-        response = self._request(
-            "GET",
-            "metadata",
-        )
-
-        if not response.ok:
-            raise RuntimeError(
-                "HAPI FHIR server is not reachable.\n"
-                f"URL: {self.base_url}\n"
-                f"Status: {response.status_code}\n"
-                f"Response: {response.text[:1000]}"
-            )
-
-        logger.info(
-            "HAPI FHIR server reachable: %s",
-            self.base_url,
-        )
-
-    def transaction(
-        self,
-        bundle: dict[str, Any],
-    ) -> dict[str, Any]:
-
-        response = self._request(
-            "POST",
-            "",
-            json=bundle,
-        )
-
-        if not response.ok:
-
-            logger.error(
-                "FHIR transaction failed: HTTP %s",
-                response.status_code,
-            )
-
-            logger.error(
-                "FHIR response: %s",
-                response.text[:3000],
-            )
-
-            response.raise_for_status()
-
-        return response.json()
+    has_wound_procedure: bool = False
 
 
 # ============================================================
-# Utility functions
+# Utility
 # ============================================================
 
 def make_uuid() -> str:
@@ -281,16 +267,11 @@ def make_uuid() -> str:
 
 def random_birth_date(
     rng: random.Random,
-    minimum_age: int = 18,
-    maximum_age: int = 95,
 ) -> str:
 
     today = date.today()
 
-    age = rng.randint(
-        minimum_age,
-        maximum_age,
-    )
+    age = rng.randint(18, 95)
 
     year = today.year - age
 
@@ -298,8 +279,10 @@ def random_birth_date(
 
     if month == 2:
         day = rng.randint(1, 28)
+
     elif month in {4, 6, 9, 11}:
         day = rng.randint(1, 30)
+
     else:
         day = rng.randint(1, 28)
 
@@ -314,189 +297,31 @@ def effective_datetime(
     rng: random.Random,
 ) -> str:
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
     minutes_ago = rng.randint(
         0,
         24 * 60,
     )
 
-    timestamp = now - timedelta(
-        minutes=minutes_ago
+    timestamp = (
+        now
+        - timedelta(minutes=minutes_ago)
     )
 
     return timestamp.isoformat()
 
 
 # ============================================================
-# Clinical data generation
+# FHIR helpers
 # ============================================================
 
-def generate_blood_pressure(
-    rng: random.Random,
-) -> tuple[int, int]:
-
-    systolic = int(
-        rng.gauss(125, 15)
-    )
-
-    diastolic = int(
-        rng.gauss(78, 10)
-    )
-
-    systolic = max(90, min(180, systolic))
-    diastolic = max(55, min(110, diastolic))
-
-    return systolic, diastolic
-
-
-def generate_profile(
-    rng: random.Random,
-) -> PatientProfile:
-
-    gender = rng.choice(
-        ["male", "female"]
-    )
-
-    if gender == "male":
-        first_name = rng.choice(
-            FIRST_NAMES_MALE
-        )
-    else:
-        first_name = rng.choice(
-            FIRST_NAMES_FEMALE
-        )
-
-    last_name = rng.choice(
-        LAST_NAMES
-    )
-
-    birth_date = random_birth_date(
-        rng
-    )
-
-    systolic, diastolic = (
-        generate_blood_pressure(rng)
-    )
-
-    heart_rate = int(
-        rng.gauss(74, 10)
-    )
-
-    heart_rate = max(
-        45,
-        min(130, heart_rate)
-    )
-
-    temperature = round(
-        rng.gauss(36.7, 0.35),
-        1,
-    )
-
-    temperature = max(
-        35.5,
-        min(39.5, temperature)
-    )
-
-    respiratory_rate = int(
-        rng.gauss(16, 3)
-    )
-
-    respiratory_rate = max(
-        10,
-        min(30, respiratory_rate)
-    )
-
-    oxygen_saturation = int(
-        rng.gauss(97, 2)
-    )
-
-    oxygen_saturation = max(
-        88,
-        min(100, oxygen_saturation)
-    )
-
-    # --------------------------------------------------------
-    # Mobility
-    #
-    # Simple demo score:
-    #
-    # 0 = independent
-    # 1 = needs assistance/device
-    # 2 = impaired mobility
-    # --------------------------------------------------------
-
-    mobility_score = rng.choices(
-        [0, 1, 2],
-        weights=[60, 30, 10],
-    )[0]
-
-    # --------------------------------------------------------
-    # Morse Fall Scale
-    #
-    # We generate a score from 0-125 but constrain it
-    # to realistic/common ranges for this demo.
-    # --------------------------------------------------------
-
-    fall_score = rng.choices(
-        [
-            rng.randint(0, 24),
-            rng.randint(25, 45),
-            rng.randint(50, 85),
-        ],
-        weights=[55, 30, 15],
-    )[0]
-
-    if fall_score <= 24:
-        fall_level = "Low Risk"
-    elif fall_score <= 45:
-        fall_level = "Moderate Risk"
-    else:
-        fall_level = "High Risk"
-
-    # Morse gait categories:
-    #
-    # 0 = Normal/bedrest/immobile
-    # 10 = Weak
-    # 20 = Impaired
-    gait_score = rng.choices(
-        [0, 10, 20],
-        weights=[60, 25, 15],
-    )[0]
-
-    gait_display = {
-        0: "Normal/bedrest/immobile",
-        10: "Weak",
-        20: "Impaired",
-    }[gait_score]
-
-    return PatientProfile(
-        first_name=first_name,
-        last_name=last_name,
-        gender=gender,
-        birth_date=birth_date,
-        systolic=systolic,
-        diastolic=diastolic,
-        heart_rate=heart_rate,
-        temperature=temperature,
-        respiratory_rate=respiratory_rate,
-        oxygen_saturation=oxygen_saturation,
-        mobility_score=mobility_score,
-        morse_fall_score=fall_score,
-        morse_fall_level=fall_level,
-        gait_score=gait_score,
-        gait_display=gait_display,
-    )
-
-
-# ============================================================
-# FHIR resource builders
-# ============================================================
-
-def coding(
+def make_coding(
     code: str,
     display: str,
-    system: str = LOINC_SYSTEM,
+    system: str,
 ) -> dict[str, str]:
 
     return {
@@ -506,7 +331,7 @@ def coding(
     }
 
 
-def quantity(
+def make_quantity(
     value: int | float,
     unit: str,
     code: str | None = None,
@@ -520,567 +345,1489 @@ def quantity(
     }
 
 
-def observation_quantity(
-    *,
-    code: str,
-    display: str,
-    value: int | float,
-    unit: str,
-    patient_ref: str,
-    effective: str,
-) -> dict[str, Any]:
-
-    return {
-        "resourceType": "Observation",
-        "status": "final",
-
-        "code": {
-            "coding": [
-                coding(code, display)
-            ]
-        },
-
-        "subject": {
-            "reference": patient_ref,
-        },
-
-        "effectiveDateTime": effective,
-
-        "valueQuantity": quantity(
-            value=value,
-            unit=unit,
-        ),
-    }
-
-
-def observation_codeable(
-    *,
-    code: str,
-    display: str,
-    value_code: str,
-    value_display: str,
-    patient_ref: str,
-    effective: str,
-) -> dict[str, Any]:
-
-    return {
-        "resourceType": "Observation",
-        "status": "final",
-
-        "code": {
-            "coding": [
-                coding(code, display)
-            ]
-        },
-
-        "subject": {
-            "reference": patient_ref,
-        },
-
-        "effectiveDateTime": effective,
-
-        "valueCodeableConcept": {
-            "coding": [
-                {
-                    "system": LOINC_SYSTEM,
-                    "code": value_code,
-                    "display": value_display,
-                }
-            ]
-        },
-    }
-
-
-def create_patient(
-    profile: PatientProfile,
-) -> dict[str, Any]:
-
-    return {
-        "resourceType": "Patient",
-
-        "name": [
-            {
-                "use": "official",
-                "family": profile.last_name,
-                "given": [
-                    profile.first_name
-                ],
-            }
-        ],
-
-        "gender": profile.gender,
-
-        "birthDate": profile.birth_date,
-    }
-
-
 # ============================================================
-# Observation generation
+# Patient generator
 # ============================================================
 
-def create_observations(
-    profile: PatientProfile,
-    patient_ref: str,
-    effective: str,
-) -> list[dict[str, Any]]:
+class PatientGenerator:
 
-    observations: list[dict[str, Any]] = []
+    def __init__(
+        self,
+        rng: random.Random,
+    ):
+        self.rng = rng
 
-    # --------------------------------------------------------
-    # Heart rate
-    # LOINC 8867-4
-    # --------------------------------------------------------
+    def generate(
+        self,
+    ) -> ClinicalProfile:
 
-    observations.append(
-        observation_quantity(
-            code=LOINC["HEART_RATE"],
-            display="Heart rate",
-            value=profile.heart_rate,
-            unit="/min",
-            patient_ref=patient_ref,
-            effective=effective,
+        gender = self.rng.choice(
+            ["male", "female"]
         )
-    )
 
-    # --------------------------------------------------------
-    # Blood pressure
-    # LOINC 85354-9
-    # --------------------------------------------------------
+        if gender == "male":
+            first_name = self.rng.choice(
+                MALE_FIRST_NAMES
+            )
+        else:
+            first_name = self.rng.choice(
+                FEMALE_FIRST_NAMES
+            )
 
-    blood_pressure = {
-        "resourceType": "Observation",
-        "status": "final",
+        last_name = self.rng.choice(
+            LAST_NAMES
+        )
 
-        "code": {
-            "coding": [
-                coding(
-                    LOINC["BLOOD_PRESSURE_PANEL"],
-                    "Blood pressure panel",
+        city, postal_code = self.rng.choice(
+            CITIES
+        )
+
+        street = self.rng.choice(
+            STREETS
+        )
+
+        # ----------------------------------------------------
+        # Vital signs
+        # ----------------------------------------------------
+
+        systolic = int(
+            self.rng.gauss(125, 15)
+        )
+
+        diastolic = int(
+            self.rng.gauss(78, 10)
+        )
+
+        systolic = max(
+            90,
+            min(180, systolic),
+        )
+
+        diastolic = max(
+            55,
+            min(110, diastolic),
+        )
+
+        heart_rate = int(
+            self.rng.gauss(74, 10)
+        )
+
+        heart_rate = max(
+            45,
+            min(130, heart_rate),
+        )
+
+        temperature = round(
+            self.rng.gauss(36.7, 0.35),
+            1,
+        )
+
+        temperature = max(
+            35.5,
+            min(39.5, temperature),
+        )
+
+        respiratory_rate = int(
+            self.rng.gauss(16, 3)
+        )
+
+        respiratory_rate = max(
+            10,
+            min(30, respiratory_rate),
+        )
+
+        oxygen_saturation = int(
+            self.rng.gauss(97, 2)
+        )
+
+        oxygen_saturation = max(
+            88,
+            min(100, oxygen_saturation),
+        )
+
+        pain_score = self.rng.randint(
+            0,
+            7,
+        )
+
+        # ----------------------------------------------------
+        # Mobility
+        # ----------------------------------------------------
+
+        mobility_score = self.rng.choices(
+            [0, 1, 2],
+            weights=[
+                60,
+                30,
+                10,
+            ],
+        )[0]
+
+        # ----------------------------------------------------
+        # Morse Fall Scale
+        # ----------------------------------------------------
+
+        morse_score = self.rng.choices(
+            [
+                self.rng.randint(0, 24),
+                self.rng.randint(25, 45),
+                self.rng.randint(50, 85),
+            ],
+            weights=[
+                55,
+                30,
+                15,
+            ],
+        )[0]
+
+        if morse_score <= 24:
+            morse_level = "Low Risk"
+
+        elif morse_score <= 45:
+            morse_level = "Moderate Risk"
+
+        else:
+            morse_level = "High Risk"
+
+        gait_score = self.rng.choices(
+            [0, 10, 20],
+            weights=[
+                60,
+                25,
+                15,
+            ],
+        )[0]
+
+        gait_display = {
+            0: "Normal/bedrest/immobile",
+            10: "Weak",
+            20: "Impaired",
+        }[gait_score]
+
+        # ----------------------------------------------------
+        # Conditions
+        # ----------------------------------------------------
+
+        conditions = []
+
+        if self.rng.random() < 0.20:
+
+            conditions.append(
+                self.rng.choice(
+                    CONDITIONS
                 )
-            ]
-        },
+            )
 
-        "subject": {
-            "reference": patient_ref,
-        },
+        if self.rng.random() < 0.10:
 
-        "effectiveDateTime": effective,
+            condition = self.rng.choice(
+                CONDITIONS
+            )
 
-        "component": [
-            {
-                "code": {
-                    "coding": [
-                        coding(
-                            LOINC["SYSTOLIC_BP"],
-                            "Systolic blood pressure",
-                        )
-                    ]
-                },
+            if condition not in conditions:
+                conditions.append(
+                    condition
+                )
 
-                "valueQuantity": quantity(
-                    profile.systolic,
-                    "mmHg",
-                    "mm[Hg]",
-                ),
-            },
+        # ----------------------------------------------------
+        # Allergies
+        # ----------------------------------------------------
 
-            {
-                "code": {
-                    "coding": [
-                        coding(
-                            LOINC["DIASTOLIC_BP"],
-                            "Diastolic blood pressure",
-                        )
-                    ]
-                },
+        allergies = []
 
-                "valueQuantity": quantity(
-                    profile.diastolic,
-                    "mmHg",
-                    "mm[Hg]",
-                ),
-            },
-        ],
-    }
+        if self.rng.random() < 0.15:
 
-    observations.append(
-        blood_pressure
-    )
+            allergies.append(
+                self.rng.choice(
+                    ALLERGIES
+                )
+            )
 
-    # --------------------------------------------------------
-    # Temperature
-    # LOINC 8310-5
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Medications
+        # ----------------------------------------------------
 
-    observations.append(
-        observation_quantity(
-            code=LOINC["TEMPERATURE"],
-            display="Body temperature",
-            value=profile.temperature,
-            unit="Cel",
-            patient_ref=patient_ref,
-            effective=effective,
+        medications = []
+
+        if self.rng.random() < 0.20:
+
+            medications.append(
+                self.rng.choice(
+                    MEDICATIONS
+                )
+            )
+
+        # ----------------------------------------------------
+        # Wound procedure
+        # ----------------------------------------------------
+
+        has_wound_procedure = any(
+            c["display"] == "Pressure ulcer"
+            for c in conditions
         )
-    )
 
-    # --------------------------------------------------------
-    # Respiratory rate
-    # LOINC 9279-1
-    # --------------------------------------------------------
-
-    observations.append(
-        observation_quantity(
-            code=LOINC["RESPIRATORY_RATE"],
-            display="Respiratory rate",
-            value=profile.respiratory_rate,
-            unit="/min",
-            patient_ref=patient_ref,
-            effective=effective,
-        )
-    )
-
-    # --------------------------------------------------------
-    # Oxygen saturation
-    # LOINC 2708-6
-    # --------------------------------------------------------
-
-    observations.append(
-        observation_quantity(
-            code=LOINC["OXYGEN_SATURATION"],
-            display="Oxygen saturation",
-            value=profile.oxygen_saturation,
-            unit="%",
-            patient_ref=patient_ref,
-            effective=effective,
-        )
-    )
-
-    # --------------------------------------------------------
-    # Mobility
-    #
-    # Demo score represented as a Quantity.
-    #
-    # LOINC 83186-7 is "Mobility" and has ordinal answer
-    # concepts in the Schmid fall risk assessment.
-    # --------------------------------------------------------
-
-    mobility_display = {
-        0: "Independent mobility",
-        1: "Mobility with assistance/device",
-        2: "Impaired mobility",
-    }[profile.mobility_score]
-
-    observations.append(
-        observation_codeable(
-            code=LOINC["MOBILITY"],
-            display="Mobility",
-            value_code=str(
-                profile.mobility_score
+        return ClinicalProfile(
+            first_name=first_name,
+            last_name=last_name,
+            gender=gender,
+            birth_date=random_birth_date(
+                self.rng
             ),
-            value_display=mobility_display,
-            patient_ref=patient_ref,
-            effective=effective,
+            street=street,
+            house_number=self.rng.randint(
+                1,
+                150,
+            ),
+            postal_code=postal_code,
+            city=city,
+            systolic=systolic,
+            diastolic=diastolic,
+            heart_rate=heart_rate,
+            temperature=temperature,
+            respiratory_rate=respiratory_rate,
+            oxygen_saturation=oxygen_saturation,
+            pain_score=pain_score,
+            mobility_score=mobility_score,
+            morse_score=morse_score,
+            morse_level=morse_level,
+            gait_score=gait_score,
+            gait_display=gait_display,
+            conditions=conditions,
+            allergies=allergies,
+            medications=medications,
+            has_wound_procedure=has_wound_procedure,
         )
-    )
-
-    # --------------------------------------------------------
-    # Morse Fall Score
-    # LOINC 59460-6
-    # --------------------------------------------------------
-
-    observations.append(
-        observation_quantity(
-            code=LOINC["MORSE_FALL_TOTAL"],
-            display="Fall risk total [Morse Fall Scale]",
-            value=profile.morse_fall_score,
-            unit="{score}",
-            patient_ref=patient_ref,
-            effective=effective,
-        )
-    )
-
-    # --------------------------------------------------------
-    # Morse Fall Risk Level
-    # LOINC 59461-4
-    # --------------------------------------------------------
-
-    observations.append(
-        observation_codeable(
-            code=LOINC["MORSE_FALL_LEVEL"],
-            display="Fall risk level [Morse Fall Scale]",
-            value_code={
-                "Low Risk": "LA13038-7",
-                "Moderate Risk": "LA13039-5",
-                "High Risk": "LA13040-3",
-            }[profile.morse_fall_level],
-            value_display=profile.morse_fall_level,
-            patient_ref=patient_ref,
-            effective=effective,
-        )
-    )
-
-    # --------------------------------------------------------
-    # Gait
-    # LOINC 59458-0
-    # --------------------------------------------------------
-
-    observations.append(
-        observation_codeable(
-            code=LOINC["MORSE_GAIT"],
-            display="Gait [Morse Fall Scale]",
-            value_code={
-                0: "LA13033-8",
-                10: "LA13034-6",
-                20: "LA13035-3",
-            }[profile.gait_score],
-            value_display=profile.gait_display,
-            patient_ref=patient_ref,
-            effective=effective,
-        )
-    )
-
-    return observations
 
 
 # ============================================================
-# Transaction Bundle
+# Patient resource
 # ============================================================
 
-def create_transaction_bundle(
-    profile: PatientProfile,
-    rng: random.Random,
-) -> dict[str, Any]:
+class PatientResourceGenerator:
 
-    patient_uuid = make_uuid()
+    @staticmethod
+    def generate(
+        profile: ClinicalProfile,
+    ) -> dict[str, Any]:
 
-    patient_full_url = (
-        f"urn:uuid:{patient_uuid}"
-    )
+        return {
+            "resourceType": "Patient",
 
-    patient_ref = patient_full_url
+            "name": [
+                {
+                    "use": "official",
+                    "family": profile.last_name,
+                    "given": [
+                        profile.first_name
+                    ],
+                }
+            ],
 
-    patient = create_patient(
-        profile
-    )
+            "gender": profile.gender,
 
-    effective = effective_datetime(
-        rng
-    )
+            "birthDate": profile.birth_date,
 
-    observations = create_observations(
-        profile=profile,
-        patient_ref=patient_ref,
-        effective=effective,
-    )
+            "address": [
+                {
+                    "use": "home",
+                    "line": [
+                        f"{profile.street} "
+                        f"{profile.house_number}"
+                    ],
+                    "postalCode": profile.postal_code,
+                    "city": profile.city,
+                    "country": "DE",
+                }
+            ],
+        }
 
-    entries: list[dict[str, Any]] = []
 
-    # --------------------------------------------------------
-    # Patient
-    # --------------------------------------------------------
+# ============================================================
+# Observation generator
+# ============================================================
 
-    entries.append(
-        {
-            "fullUrl": patient_full_url,
+class ObservationGenerator:
 
-            "resource": patient,
+    @staticmethod
+    def quantity_observation(
+        code: str,
+        display: str,
+        value: int | float,
+        unit: str,
+        patient_ref: str,
+        effective: str,
+    ) -> dict[str, Any]:
 
-            "request": {
-                "method": "POST",
-                "url": "Patient",
+        return {
+            "resourceType": "Observation",
+            "status": "final",
+
+            "code": {
+                "coding": [
+                    make_coding(
+                        code,
+                        display,
+                        LOINC_SYSTEM,
+                    )
+                ]
+            },
+
+            "subject": {
+                "reference": patient_ref,
+            },
+
+            "effectiveDateTime": effective,
+
+            "valueQuantity": make_quantity(
+                value,
+                unit,
+            ),
+        }
+
+    @staticmethod
+    def codeable_observation(
+        code: str,
+        display: str,
+        value_code: str,
+        value_display: str,
+        patient_ref: str,
+        effective: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "Observation",
+            "status": "final",
+
+            "code": {
+                "coding": [
+                    make_coding(
+                        code,
+                        display,
+                        LOINC_SYSTEM,
+                    )
+                ]
+            },
+
+            "subject": {
+                "reference": patient_ref,
+            },
+
+            "effectiveDateTime": effective,
+
+            "valueCodeableConcept": {
+                "coding": [
+                    make_coding(
+                        value_code,
+                        value_display,
+                        LOINC_SYSTEM,
+                    )
+                ]
             },
         }
-    )
 
-    # --------------------------------------------------------
-    # Observations
-    # --------------------------------------------------------
+    @classmethod
+    def generate(
+        cls,
+        profile: ClinicalProfile,
+        patient_ref: str,
+        effective: str,
+    ) -> list[dict[str, Any]]:
 
-    for observation in observations:
+        observations = []
+
+        # Heart rate
+        observations.append(
+            cls.quantity_observation(
+                LOINC["HEART_RATE"],
+                "Heart rate",
+                profile.heart_rate,
+                "/min",
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Blood pressure
+        observations.append(
+            {
+                "resourceType": "Observation",
+                "status": "final",
+
+                "code": {
+                    "coding": [
+                        make_coding(
+                            LOINC["BLOOD_PRESSURE"],
+                            "Blood pressure panel",
+                            LOINC_SYSTEM,
+                        )
+                    ]
+                },
+
+                "subject": {
+                    "reference": patient_ref,
+                },
+
+                "effectiveDateTime": effective,
+
+                "component": [
+                    {
+                        "code": {
+                            "coding": [
+                                make_coding(
+                                    LOINC["SYSTOLIC_BP"],
+                                    "Systolic blood pressure",
+                                    LOINC_SYSTEM,
+                                )
+                            ]
+                        },
+
+                        "valueQuantity": make_quantity(
+                            profile.systolic,
+                            "mmHg",
+                            "mm[Hg]",
+                        ),
+                    },
+                    {
+                        "code": {
+                            "coding": [
+                                make_coding(
+                                    LOINC["DIASTOLIC_BP"],
+                                    "Diastolic blood pressure",
+                                    LOINC_SYSTEM,
+                                )
+                            ]
+                        },
+
+                        "valueQuantity": make_quantity(
+                            profile.diastolic,
+                            "mmHg",
+                            "mm[Hg]",
+                        ),
+                    },
+                ],
+            }
+        )
+
+        # Temperature
+        observations.append(
+            cls.quantity_observation(
+                LOINC["TEMPERATURE"],
+                "Body temperature",
+                profile.temperature,
+                "Cel",
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Respiratory rate
+        observations.append(
+            cls.quantity_observation(
+                LOINC["RESPIRATORY_RATE"],
+                "Respiratory rate",
+                profile.respiratory_rate,
+                "/min",
+                patient_ref,
+                effective,
+            )
+        )
+
+        # SpO2
+        observations.append(
+            cls.quantity_observation(
+                LOINC["OXYGEN_SATURATION"],
+                "Oxygen saturation",
+                profile.oxygen_saturation,
+                "%",
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Pain
+        observations.append(
+            cls.quantity_observation(
+                LOINC["PAIN_SEVERITY"],
+                "Pain severity",
+                profile.pain_score,
+                "{score}",
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Mobility
+        mobility_display = {
+            0: "Independent mobility",
+            1: "Mobility with assistance/device",
+            2: "Impaired mobility",
+        }[profile.mobility_score]
+
+        observations.append(
+            cls.codeable_observation(
+                LOINC["MOBILITY"],
+                "Mobility",
+                str(profile.mobility_score),
+                mobility_display,
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Morse score
+        observations.append(
+            cls.quantity_observation(
+                LOINC["MORSE_FALL_TOTAL"],
+                "Fall risk total [Morse Fall Scale]",
+                profile.morse_score,
+                "{score}",
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Morse risk level
+        risk_code = {
+            "Low Risk": "LA13038-7",
+            "Moderate Risk": "LA13039-5",
+            "High Risk": "LA13040-3",
+        }[profile.morse_level]
+
+        observations.append(
+            cls.codeable_observation(
+                LOINC["MORSE_FALL_LEVEL"],
+                "Fall risk level [Morse Fall Scale]",
+                risk_code,
+                profile.morse_level,
+                patient_ref,
+                effective,
+            )
+        )
+
+        # Morse gait
+        gait_code = {
+            0: "LA13033-8",
+            10: "LA13034-6",
+            20: "LA13035-3",
+        }[profile.gait_score]
+
+        observations.append(
+            cls.codeable_observation(
+                LOINC["MORSE_GAIT"],
+                "Gait [Morse Fall Scale]",
+                gait_code,
+                profile.gait_display,
+                patient_ref,
+                effective,
+            )
+        )
+
+        return observations
+
+
+# ============================================================
+# Condition generator
+# ============================================================
+
+class ConditionGenerator:
+
+    @staticmethod
+    def generate(
+        condition: dict[str, Any],
+        patient_ref: str,
+        recorded: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "Condition",
+
+            "clinicalStatus": {
+                "coding": [
+                    {
+                        "system":
+                            "http://terminology.hl7.org/"
+                            "CodeSystem/condition-clinical",
+                        "code": "active",
+                        "display": "Active",
+                    }
+                ]
+            },
+
+            "verificationStatus": {
+                "coding": [
+                    {
+                        "system":
+                            "http://terminology.hl7.org/"
+                            "CodeSystem/condition-ver-status",
+                        "code": "confirmed",
+                        "display": "Confirmed",
+                    }
+                ]
+            },
+
+            "code": {
+                "coding": [
+                    make_coding(
+                        condition["code"],
+                        condition["display"],
+                        condition["system"],
+                    )
+                ],
+
+                "text": condition["display"],
+            },
+
+            "subject": {
+                "reference": patient_ref,
+            },
+
+            "recordedDate": recorded,
+        }
+
+
+# ============================================================
+# Allergy generator
+# ============================================================
+
+class AllergyGenerator:
+
+    @staticmethod
+    def generate(
+        allergy: dict[str, Any],
+        patient_ref: str,
+        recorded: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "AllergyIntolerance",
+
+            "clinicalStatus": {
+                "coding": [
+                    {
+                        "system":
+                            "http://terminology.hl7.org/"
+                            "CodeSystem/allergyintolerance-clinical",
+                        "code": "active",
+                        "display": "Active",
+                    }
+                ]
+            },
+
+            "verificationStatus": {
+                "coding": [
+                    {
+                        "system":
+                            "http://terminology.hl7.org/"
+                            "CodeSystem/allergyintolerance-verification",
+                        "code": "confirmed",
+                        "display": "Confirmed",
+                    }
+                ]
+            },
+
+            "type": "allergy",
+
+            "category": [
+                "medication"
+            ],
+
+            "code": {
+                "coding": [
+                    make_coding(
+                        allergy["code"],
+                        allergy["display"],
+                        allergy["system"],
+                    )
+                ],
+
+                "text": allergy["display"],
+            },
+
+            "patient": {
+                "reference": patient_ref,
+            },
+
+            "recordedDate": recorded,
+        }
+
+
+# ============================================================
+# MedicationRequest generator
+# ============================================================
+
+class MedicationRequestGenerator:
+
+    @staticmethod
+    def generate(
+        medication: dict[str, Any],
+        patient_ref: str,
+        authored_on: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "MedicationRequest",
+
+            "status": "active",
+
+            "intent": "order",
+
+            "medicationCodeableConcept": {
+                "coding": [
+                    make_coding(
+                        medication["code"],
+                        medication["display"],
+                        medication["system"],
+                    )
+                ],
+
+                "text": medication["display"],
+            },
+
+            "subject": {
+                "reference": patient_ref,
+            },
+
+            "authoredOn": authored_on,
+
+            "dosageInstruction": [
+                {
+                    "text": (
+                        "1 Tablette morgens "
+                        "nach ärztlicher Anordnung"
+                    ),
+
+                    "timing": {
+                        "repeat": {
+                            "frequency": 1,
+                            "period": 1,
+                            "periodUnit": "d",
+                        }
+                    },
+
+                    "route": {
+                        "coding": [
+                            {
+                                "system":
+                                    "http://snomed.info/sct",
+                                "code":
+                                    "26643006",
+                                "display":
+                                    "Oral route",
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+
+
+# ============================================================
+# Procedure generator
+# ============================================================
+
+class ProcedureGenerator:
+
+    @staticmethod
+    def generate(
+        patient_ref: str,
+        performed: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "Procedure",
+
+            "status": "completed",
+
+            "code": {
+                "coding": [
+                    {
+                        "system":
+                            SNOMED_SYSTEM,
+
+                        # Demo terminology mapping.
+                        "code":
+                            "225358003",
+
+                        "display":
+                            "Wound care",
+                    }
+                ],
+
+                "text": "Wound care",
+            },
+
+            "subject": {
+                "reference": patient_ref,
+            },
+
+            "performedDateTime": performed,
+        }
+
+
+# ============================================================
+# CarePlan generator
+# ============================================================
+
+class CarePlanGenerator:
+
+    @staticmethod
+    def generate(
+        profile: ClinicalProfile,
+        patient_ref: str,
+        authored: str,
+    ) -> dict[str, Any]:
+
+        goals = []
+
+        activities = []
+
+        # ----------------------------------------------------
+        # Generic nursing goals
+        # ----------------------------------------------------
+
+        goals.append(
+            {
+                "reference": {
+                    "display":
+                        "Maintain patient safety "
+                        "and prevent falls"
+                }
+            }
+        )
+
+        activities.append(
+            {
+                "detail": {
+                    "status": "in-progress",
+                    "description":
+                        "Regular fall-risk assessment",
+                }
+            }
+        )
+
+        # ----------------------------------------------------
+        # Mobility
+        # ----------------------------------------------------
+
+        if profile.mobility_score > 0:
+
+            goals.append(
+                {
+                    "reference": {
+                        "display":
+                            "Improve and maintain mobility"
+                    }
+                }
+            )
+
+            activities.append(
+                {
+                    "detail": {
+                        "status": "in-progress",
+                        "description":
+                            "Mobilisation with "
+                            "appropriate assistance",
+                    }
+                }
+            )
+
+        # ----------------------------------------------------
+        # Diabetes
+        # ----------------------------------------------------
+
+        if any(
+            c["display"] == "Diabetes mellitus"
+            for c in profile.conditions
+        ):
+
+            goals.append(
+                {
+                    "reference": {
+                        "display":
+                            "Maintain stable "
+                            "blood glucose"
+                    }
+                }
+            )
+
+            activities.append(
+                {
+                    "detail": {
+                        "status": "in-progress",
+                        "description":
+                            "Regular blood glucose "
+                            "monitoring",
+                    }
+                }
+            )
+
+        # ----------------------------------------------------
+        # Pressure ulcer
+        # ----------------------------------------------------
+
+        if any(
+            c["display"] == "Pressure ulcer"
+            for c in profile.conditions
+        ):
+
+            goals.append(
+                {
+                    "reference": {
+                        "display":
+                            "Support wound healing"
+                    }
+                }
+            )
+
+            activities.append(
+                {
+                    "detail": {
+                        "status": "in-progress",
+                        "description":
+                            "Regular wound assessment "
+                            "and wound care",
+                    }
+                }
+            )
+
+        return {
+            "resourceType": "CarePlan",
+
+            "status": "active",
+
+            "intent": "plan",
+
+            "title": "Nursing care plan",
+
+            "description":
+                "Synthetic nursing care plan "
+                "generated for testing.",
+
+            "subject": {
+                "reference": patient_ref,
+            },
+
+            "created": authored,
+
+            "goal": goals,
+
+            "activity": activities,
+        }
+
+
+# ============================================================
+# Bundle generator
+# ============================================================
+
+class BundleGenerator:
+
+    def __init__(
+        self,
+        rng: random.Random,
+    ):
+        self.rng = rng
+
+        self.patient_generator = (
+            PatientGenerator(rng)
+        )
+
+    def generate(
+        self,
+    ) -> tuple[
+        ClinicalProfile,
+        dict[str, Any],
+    ]:
+
+        profile = (
+            self.patient_generator.generate()
+        )
+
+        patient_uuid = make_uuid()
+
+        patient_ref = (
+            f"urn:uuid:{patient_uuid}"
+        )
+
+        effective = effective_datetime(
+            self.rng
+        )
+
+        entries = []
+
+        # ----------------------------------------------------
+        # Patient
+        # ----------------------------------------------------
+
+        patient = (
+            PatientResourceGenerator.generate(
+                profile
+            )
+        )
 
         entries.append(
             {
-                "fullUrl": (
-                    f"urn:uuid:{make_uuid()}"
-                ),
+                "fullUrl": patient_ref,
 
-                "resource": observation,
+                "resource": patient,
 
                 "request": {
                     "method": "POST",
-                    "url": "Observation",
+                    "url": "Patient",
                 },
             }
         )
 
-    return {
-        "resourceType": "Bundle",
-        "type": "transaction",
-        "entry": entries,
-    }
+        # ----------------------------------------------------
+        # Observations
+        # ----------------------------------------------------
+
+        observations = (
+            ObservationGenerator.generate(
+                profile,
+                patient_ref,
+                effective,
+            )
+        )
+
+        for observation in observations:
+
+            entries.append(
+                {
+                    "fullUrl":
+                        f"urn:uuid:{make_uuid()}",
+
+                    "resource": observation,
+
+                    "request": {
+                        "method": "POST",
+                        "url": "Observation",
+                    },
+                }
+            )
+
+        # ----------------------------------------------------
+        # Conditions
+        # ----------------------------------------------------
+
+        for condition in profile.conditions:
+
+            resource = (
+                ConditionGenerator.generate(
+                    condition,
+                    patient_ref,
+                    effective,
+                )
+            )
+
+            entries.append(
+                {
+                    "fullUrl":
+                        f"urn:uuid:{make_uuid()}",
+
+                    "resource": resource,
+
+                    "request": {
+                        "method": "POST",
+                        "url": "Condition",
+                    },
+                }
+            )
+
+        # ----------------------------------------------------
+        # Allergies
+        # ----------------------------------------------------
+
+        for allergy in profile.allergies:
+
+            resource = (
+                AllergyGenerator.generate(
+                    allergy,
+                    patient_ref,
+                    effective,
+                )
+            )
+
+            entries.append(
+                {
+                    "fullUrl":
+                        f"urn:uuid:{make_uuid()}",
+
+                    "resource": resource,
+
+                    "request": {
+                        "method":
+                            "POST",
+
+                        "url":
+                            "AllergyIntolerance",
+                    },
+                }
+            )
+
+        # ----------------------------------------------------
+        # MedicationRequest
+        # ----------------------------------------------------
+
+        for medication in profile.medications:
+
+            resource = (
+                MedicationRequestGenerator.generate(
+                    medication,
+                    patient_ref,
+                    effective,
+                )
+            )
+
+            entries.append(
+                {
+                    "fullUrl":
+                        f"urn:uuid:{make_uuid()}",
+
+                    "resource": resource,
+
+                    "request": {
+                        "method":
+                            "POST",
+
+                        "url":
+                            "MedicationRequest",
+                    },
+                }
+            )
+
+        # ----------------------------------------------------
+        # Procedure
+        # ----------------------------------------------------
+
+        if profile.has_wound_procedure:
+
+            procedure = (
+                ProcedureGenerator.generate(
+                    patient_ref,
+                    effective,
+                )
+            )
+
+            entries.append(
+                {
+                    "fullUrl":
+                        f"urn:uuid:{make_uuid()}",
+
+                    "resource": procedure,
+
+                    "request": {
+                        "method": "POST",
+                        "url": "Procedure",
+                    },
+                }
+            )
+
+        # ----------------------------------------------------
+        # CarePlan
+        # ----------------------------------------------------
+
+        care_plan = (
+            CarePlanGenerator.generate(
+                profile,
+                patient_ref,
+                effective,
+            )
+        )
+
+        entries.append(
+            {
+                "fullUrl":
+                    f"urn:uuid:{make_uuid()}",
+
+                "resource": care_plan,
+
+                "request": {
+                    "method": "POST",
+                    "url": "CarePlan",
+                },
+            }
+        )
+
+        bundle = {
+            "resourceType": "Bundle",
+            "type": "transaction",
+            "entry": entries,
+        }
+
+        return profile, bundle
 
 
 # ============================================================
-# Seed generation
+# FHIR Client
 # ============================================================
 
-def seed_patients(
-    client: FHIRClient,
-    number_of_patients: int,
-    batch_size: int,
-    seed: int | None,
-) -> None:
+class FHIRClient:
 
-    if not 1 <= number_of_patients <= 1000:
-        raise ValueError(
-            "number_of_patients must be between 1 and 1000"
-        )
-
-    if batch_size < 1:
-        raise ValueError(
-            "batch_size must be >= 1"
-        )
-
-    rng = random.Random(seed)
-
-    logger.info(
-        "Starting FHIR seed"
-    )
-
-    logger.info(
-        "FHIR server: %s",
-        client.base_url,
-    )
-
-    logger.info(
-        "Patients: %s",
-        number_of_patients,
-    )
-
-    logger.info(
-        "Batch size: %s",
-        batch_size,
-    )
-
-    if seed is not None:
-        logger.info(
-            "Random seed: %s",
-            seed,
-        )
-
-    successful = 0
-    failed = 0
-
-    for batch_start in range(
-        0,
-        number_of_patients,
-        batch_size,
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float,
+        retries: int,
     ):
 
-        batch_end = min(
-            batch_start + batch_size,
-            number_of_patients,
+        self.base_url = base_url.rstrip("/")
+
+        self.timeout = timeout
+
+        self.retries = retries
+
+        self.session = requests.Session()
+
+        self.session.headers.update(
+            {
+                "Accept":
+                    "application/fhir+json",
+
+                "Content-Type":
+                    "application/fhir+json",
+            }
         )
 
-        logger.info(
-            "Processing patients %s-%s",
-            batch_start + 1,
-            batch_end,
+    def request(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs: Any,
+    ) -> requests.Response:
+
+        url = (
+            f"{self.base_url}/"
+            f"{endpoint.lstrip('/')}"
         )
 
-        for patient_number in range(
-            batch_start + 1,
-            batch_end + 1,
+        last_exception = None
+
+        for attempt in range(
+            1,
+            self.retries + 1,
         ):
-
-            profile = generate_profile(
-                rng
-            )
-
-            bundle = create_transaction_bundle(
-                profile,
-                rng,
-            )
 
             try:
 
-                response = client.transaction(
-                    bundle
+                response = self.session.request(
+                    method,
+                    url,
+                    timeout=self.timeout,
+                    **kwargs,
                 )
 
-                successful += 1
+                if response.status_code >= 500:
 
-                logger.info(
-                    "[%s/%s] Created %s %s",
-                    patient_number,
-                    number_of_patients,
-                    profile.first_name,
-                    profile.last_name,
-                )
+                    if attempt < self.retries:
 
-                if response.get(
-                    "resourceType"
-                ) != "Bundle":
+                        logger.warning(
+                            "FHIR HTTP %s. "
+                            "Retry %s/%s",
+                            response.status_code,
+                            attempt,
+                            self.retries,
+                        )
 
-                    logger.warning(
-                        "Unexpected FHIR response"
+                        time.sleep(
+                            2 ** (attempt - 1)
+                        )
+
+                        continue
+
+                return response
+
+            except requests.RequestException as exc:
+
+                last_exception = exc
+
+                if attempt < self.retries:
+
+                    time.sleep(
+                        2 ** (attempt - 1)
                     )
 
-            except Exception as exc:
+        raise RuntimeError(
+            "FHIR request failed"
+        ) from last_exception
 
-                failed += 1
+    def health_check(self) -> None:
 
-                logger.exception(
-                    "[%s/%s] Failed to create patient: %s",
-                    patient_number,
-                    number_of_patients,
-                    exc,
-                )
+        response = self.request(
+            "GET",
+            "metadata",
+        )
+
+        if not response.ok:
+
+            raise RuntimeError(
+                "HAPI FHIR server unavailable:\n"
+                f"Status: {response.status_code}\n"
+                f"{response.text[:2000]}"
+            )
 
         logger.info(
-            "Progress: %s successful / %s failed",
+            "HAPI FHIR server is reachable."
+        )
+
+    def transaction(
+        self,
+        bundle: dict[str, Any],
+    ) -> dict[str, Any]:
+
+        response = self.request(
+            "POST",
+            "",
+            json=bundle,
+        )
+
+        if not response.ok:
+
+            logger.error(
+                "FHIR transaction failed: %s",
+                response.status_code,
+            )
+
+            logger.error(
+                response.text[:5000]
+            )
+
+            response.raise_for_status()
+
+        return response.json()
+
+
+# ============================================================
+# Seed service
+# ============================================================
+
+class SeedService:
+
+    def __init__(
+        self,
+        client: FHIRClient,
+        seed: int | None,
+    ):
+
+        self.client = client
+
+        self.rng = random.Random(
+            seed
+        )
+
+        self.bundle_generator = (
+            BundleGenerator(self.rng)
+        )
+
+    def run(
+        self,
+        number_of_patients: int,
+        batch_size: int,
+    ) -> None:
+
+        successful = 0
+        failed = 0
+
+        for start in range(
+            0,
+            number_of_patients,
+            batch_size,
+        ):
+
+            end = min(
+                start + batch_size,
+                number_of_patients,
+            )
+
+            logger.info(
+                "Processing patients %s-%s",
+                start + 1,
+                end,
+            )
+
+            for index in range(
+                start,
+                end,
+            ):
+
+                patient_number = index + 1
+
+                try:
+
+                    profile, bundle = (
+                        self.bundle_generator.generate()
+                    )
+
+                    response = (
+                        self.client.transaction(
+                            bundle
+                        )
+                    )
+
+                    successful += 1
+
+                    logger.info(
+                        "[%s/%s] Created %s %s "
+                        "| conditions=%s "
+                        "| allergies=%s "
+                        "| medications=%s",
+                        patient_number,
+                        number_of_patients,
+                        profile.first_name,
+                        profile.last_name,
+                        len(profile.conditions),
+                        len(profile.allergies),
+                        len(profile.medications),
+                    )
+
+                except Exception as exc:
+
+                    failed += 1
+
+                    logger.error(
+                        "[%s/%s] FAILED: %s",
+                        patient_number,
+                        number_of_patients,
+                        exc,
+                    )
+
+        logger.info(
+            "=========================================="
+        )
+
+        logger.info(
+            "FHIR seed finished"
+        )
+
+        logger.info(
+            "Successful: %s",
             successful,
+        )
+
+        logger.info(
+            "Failed: %s",
             failed,
         )
 
-    logger.info(
-        "================================================"
-    )
-
-    logger.info(
-        "Seed finished"
-    )
-
-    logger.info(
-        "Successful: %s",
-        successful,
-    )
-
-    logger.info(
-        "Failed: %s",
-        failed,
-    )
-
-    logger.info(
-        "================================================"
-    )
-
-    if failed > 0:
-        raise RuntimeError(
-            f"{failed} patient transactions failed"
+        logger.info(
+            "=========================================="
         )
+
+        if failed:
+            raise RuntimeError(
+                f"{failed} patient transactions failed."
+            )
 
 
 # ============================================================
 # CLI
 # ============================================================
 
-def parse_args() -> argparse.Namespace:
+def parse_args():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Generate synthetic patients and "
-            "FHIR Observations for HAPI FHIR."
+            "Generate synthetic clinical "
+            "FHIR data for HAPI FHIR."
         )
     )
 
@@ -1088,30 +1835,28 @@ def parse_args() -> argparse.Namespace:
         "--patients",
         type=int,
         default=100,
-        help="Number of patients to create.",
+        help="Number of patients.",
     )
 
     parser.add_argument(
         "--batch-size",
         type=int,
         default=FHIR_BATCH_SIZE,
-        help="Number of patients processed per batch.",
+        help="Patients per processing batch.",
     )
 
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help=(
-            "Random seed for reproducible test data."
-        ),
+        help="Reproducible random seed.",
     )
 
     parser.add_argument(
         "--url",
         type=str,
         default=FHIR_SERVER_URL,
-        help="HAPI FHIR base URL.",
+        help="FHIR server base URL.",
     )
 
     return parser.parse_args()
@@ -1125,6 +1870,22 @@ def main() -> int:
 
     args = parse_args()
 
+    if not 1 <= args.patients <= 1000:
+
+        logger.error(
+            "--patients must be between 1 and 1000."
+        )
+
+        return 2
+
+    if args.batch_size < 1:
+
+        logger.error(
+            "--batch-size must be >= 1."
+        )
+
+        return 2
+
     client = FHIRClient(
         base_url=args.url,
         timeout=FHIR_TIMEOUT,
@@ -1135,11 +1896,36 @@ def main() -> int:
 
         client.health_check()
 
-        seed_patients(
+        logger.info(
+            "FHIR URL: %s",
+            args.url,
+        )
+
+        logger.info(
+            "Patients: %s",
+            args.patients,
+        )
+
+        logger.info(
+            "Batch size: %s",
+            args.batch_size,
+        )
+
+        if args.seed is not None:
+
+            logger.info(
+                "Random seed: %s",
+                args.seed,
+            )
+
+        service = SeedService(
             client=client,
+            seed=args.seed,
+        )
+
+        service.run(
             number_of_patients=args.patients,
             batch_size=args.batch_size,
-            seed=args.seed,
         )
 
         return 0
@@ -1147,14 +1933,14 @@ def main() -> int:
     except KeyboardInterrupt:
 
         logger.warning(
-            "Seed interrupted by user."
+            "Seed interrupted."
         )
 
         return 130
 
     except Exception as exc:
 
-        logger.error(
+        logger.exception(
             "Seed failed: %s",
             exc,
         )
