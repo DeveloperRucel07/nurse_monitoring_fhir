@@ -1,7 +1,6 @@
-import os
+import os, sys
 from pathlib import Path
 from typing import Any, Dict, List
-
 import joblib
 import pandas as pd
 import requests
@@ -10,6 +9,9 @@ from sklearn.impute import SimpleImputer
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app.fhir_ml.ml.ml_utils import (
     RISK_FEATURE_COLUMNS,
@@ -18,6 +20,8 @@ from backend.app.fhir_ml.ml.ml_utils import (
     extract_risk_labels_from_fhir,
 )
 
+
+
 BASE_URL = os.getenv(
     "FHIR_SERVER_URL",
     "http://localhost:8080/fhir",
@@ -25,7 +29,7 @@ BASE_URL = os.getenv(
 MODEL_DIR = Path(
     os.getenv(
         "FALL_RISK_MODEL_DIR",
-        "backend/app/fhir_ml/ml/models",
+        str(PROJECT_ROOT / "backend/app/fhir_ml/ml/models"),
     )
 )
 
