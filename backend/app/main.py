@@ -14,7 +14,12 @@ from backend.app.fhir_ml.ml.ml_utils import (
 )
 
 from backend.app.fhir_ml.fhir.FHIRclient import FHIRClient
-from backend.app.models.models import ObservationCreate, ObservationCreate, PatientCreate
+from backend.app.models.models import (
+    ClinicalRecordCreate,
+    ClinicalRecordType,
+    ObservationCreate,
+    PatientCreate,
+)
 
 app = FastAPI(
     title="Pflege-Monitoring FHIR API",
@@ -54,6 +59,28 @@ async def get_patient(patient_id: str):
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
 
     return patient
+
+
+@app.put("/Patient/{patient_id}")
+async def update_patient(patient_id: str, patient: PatientCreate):
+    """Aktualisiert die pflegerelevanten Stammdaten eines Patienten."""
+    try:
+        existing_patient = fhir.get_patient(patient_id)
+        existing_patient.update(patient.model_dump(exclude_none=True))
+        existing_patient["resourceType"] = "Patient"
+        existing_patient["id"] = patient_id
+        return fhir.update_patient(patient_id, existing_patient)
+    except requests.exceptions.HTTPError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
+
+
+@app.delete("/Patient/{patient_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_patient(patient_id: str):
+    """Löscht einen Patienten im FHIR-Server."""
+    try:
+        fhir.delete_patient(patient_id)
+    except requests.exceptions.HTTPError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
 
 
 @app.get("/Patient")
@@ -137,6 +164,99 @@ async def delete_observation(observation_id: str):
     except requests.exceptions.HTTPError as e:
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     # Kein Body bei 204
+
+
+def codeable_concept(record: ClinicalRecordCreate) -> Dict[str, Any]:
+    concept: Dict[str, Any] = {"text": record.display}
+    if record.code:
+        concept["coding"] = [{
+            "system": record.system,
+            "code": record.code,
+            "display": record.display,
+        }]
+    return concept
+
+
+def clinical_resource(
+    patient_id: str,
+    record_type: ClinicalRecordType,
+    record: ClinicalRecordCreate,
+) -> Dict[str, Any]:
+    concept = codeable_concept(record)
+    reference = {"reference": f"Patient/{patient_id}"}
+
+    if record_type == "Condition":
+        resource = {
+            "resourceType": record_type,
+            "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": record.status}]},
+            "code": concept,
+            "subject": reference,
+        }
+    elif record_type == "MedicationStatement":
+        resource = {
+            "resourceType": record_type,
+            "status": record.status,
+            "medicationCodeableConcept": concept,
+            "subject": reference,
+        }
+    elif record_type == "AllergyIntolerance":
+        resource = {
+            "resourceType": record_type,
+            "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical", "code": record.status}]},
+            "code": concept,
+            "patient": reference,
+        }
+    elif record_type == "ClinicalImpression":
+        resource = {
+            "resourceType": record_type,
+            "status": "completed",
+            "subject": reference,
+            "date": datetime.now(timezone.utc).isoformat(),
+            "summary": record.display,
+        }
+        if record.details:
+            resource["description"] = record.details
+    else:
+        resource = {
+            "resourceType": record_type,
+            "status": record.status,
+            "intent": "plan",
+            "subject": reference,
+            "title": record.display,
+        }
+        if record.details:
+            resource["description"] = record.details
+    return resource
+
+
+@app.post(
+    "/Patient/{patient_id}/clinical-records/{record_type}",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_clinical_record(
+    patient_id: str,
+    record_type: ClinicalRecordType,
+    record: ClinicalRecordCreate,
+):
+    try:
+        return fhir.create_resource(
+            record_type,
+            clinical_resource(patient_id, record_type, record),
+        )
+    except requests.exceptions.HTTPError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
+
+
+@app.get("/Patient/{patient_id}/clinical-records/{record_type}")
+async def list_clinical_records(
+    patient_id: str,
+    record_type: ClinicalRecordType,
+):
+    patient_parameter = "patient" if record_type == "AllergyIntolerance" else "subject"
+    try:
+        return fhir.search_resources(record_type, patient_id, patient_parameter)
+    except requests.exceptions.HTTPError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=str(exc))
 
 from datetime import datetime, timezone
 

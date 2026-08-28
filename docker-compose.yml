@@ -31,5 +31,27 @@ services:
       postgres:
         condition: service_healthy
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      FHIR_SERVER_URL: http://hapi-fhir:8080/fhir
+    ports:
+      - "8000:8000"
+    depends_on:
+      - hapi-fhir
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      BACKEND_API_URL: http://backend:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+
 volumes:
   hapi-postgres-data: 

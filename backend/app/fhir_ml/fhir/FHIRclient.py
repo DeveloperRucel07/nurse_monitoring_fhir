@@ -26,6 +26,26 @@ class FHIRClient:
         response.raise_for_status()
         return response.json()
 
+    def update_patient(
+        self,
+        patient_id: str,
+        patient_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        response = requests.put(
+            f"{self.base_url}/Patient/{patient_id}",
+            json=patient_data,
+            headers=self.headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def delete_patient(self, patient_id: str) -> None:
+        response = requests.delete(
+            f"{self.base_url}/Patient/{patient_id}",
+            headers=self.headers,
+        )
+        response.raise_for_status()
+
     def search_patients(self, family: Optional[str] = None, given: Optional[str] = None, birthdate: Optional[str] = None ) -> Dict[str, Any]:
         """
         Sucht Patienten, optional nach Familienname, Vorname und/oder Geburtsdatum.
@@ -47,6 +67,33 @@ class FHIRClient:
         """Legt eine neue Observation an und gibt die Antwort als Dict zurück."""
         url = f"{self.base_url}/Observation"
         response = requests.post(url, json=observation_data, headers=self.headers)
+        response.raise_for_status()
+        return response.json()
+
+    def create_resource(
+        self,
+        resource_type: str,
+        resource_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        response = requests.post(
+            f"{self.base_url}/{resource_type}",
+            json=resource_data,
+            headers=self.headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def search_resources(
+        self,
+        resource_type: str,
+        patient_id: str,
+        patient_parameter: str = "subject",
+    ) -> Dict[str, Any]:
+        response = requests.get(
+            f"{self.base_url}/{resource_type}",
+            params={patient_parameter: f"Patient/{patient_id}"},
+            headers=self.headers,
+        )
         response.raise_for_status()
         return response.json()
 

@@ -371,40 +371,31 @@ def extract_features_from_fhir(patient: Dict[str, Any],observations: List[Dict[s
             )
 
         elif code == CODE_MOBILITY:
-
-            coding = (
-                observation
-                .get(
-                    "valueCodeableConcept",
-                    {},
-                )
-                .get(
-                    "coding",
-                    [],
-                )
-            )
-
-            if coding:
-
-                mobility_code = (
-                    coding[0].get("code")
-                )
-
-                try:
-
-                    mobility_score = (
-                        float(mobility_code)
+            mobility_score = _get_observation_quantity(observation)
+            if mobility_score is None:
+                coding = (
+                    observation
+                    .get(
+                        "valueCodeableConcept",
+                        {},
                     )
-
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-
-                    logger.warning(
-                        "Invalid mobility code: %s",
-                        mobility_code,
+                    .get(
+                        "coding",
+                        [],
                     )
+                )
+
+                if coding:
+                    mobility_code = coding[0].get("code")
+
+                    try:
+                        mobility_score = float(mobility_code)
+
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Invalid mobility code: %s",
+                            mobility_code,
+                        )
 
         elif code == CODE_MORSE_TOTAL:
 

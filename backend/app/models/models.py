@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Literal, Optional, List, Dict, Any
 from pydantic import BaseModel
 
 
@@ -39,4 +39,23 @@ class ObservationCreate(BaseModel):
     effectiveDateTime: Optional[str] = None
     valueQuantity: Optional[Quantity] = None
     component: Optional[List[ObservationComponent]] = None
+
+
+class ClinicalRecordCreate(BaseModel):
+    """Validierte Eingabe für pflegerelevante FHIR-Ressourcen."""
+
+    display: str
+    code: Optional[str] = None
+    system: str = "http://snomed.info/sct"
+    status: str = "active"
+    details: Optional[str] = None
+
+
+ClinicalRecordType = Literal[
+    "Condition",
+    "MedicationStatement",
+    "AllergyIntolerance",
+    "ClinicalImpression",
+    "CarePlan",
+]
 
