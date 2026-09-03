@@ -1247,22 +1247,31 @@ class CarePlanGenerator:
         authored: str,
     ) -> dict[str, Any]:
 
-        goals = []
+        contained_goals = []
+
+        goal_references = []
 
         activities = []
+
+        def add_goal(goal_id: str, description: str) -> None:
+            contained_goals.append(
+                {
+                    "resourceType": "Goal",
+                    "id": goal_id,
+                    "lifecycleStatus": "active",
+                    "description": {"text": description},
+                    "subject": {"reference": patient_ref},
+                }
+            )
+            goal_references.append({"reference": f"#{goal_id}"})
 
         # ----------------------------------------------------
         # Generic nursing goals
         # ----------------------------------------------------
 
-        goals.append(
-            {
-                "reference": {
-                    "display":
-                        "Maintain patient safety "
-                        "and prevent falls"
-                }
-            }
+        add_goal(
+            "goal-safety",
+            "Maintain patient safety and prevent falls",
         )
 
         activities.append(
@@ -1281,13 +1290,9 @@ class CarePlanGenerator:
 
         if profile.mobility_score > 0:
 
-            goals.append(
-                {
-                    "reference": {
-                        "display":
-                            "Improve and maintain mobility"
-                    }
-                }
+            add_goal(
+                "goal-mobility",
+                "Improve and maintain mobility",
             )
 
             activities.append(
@@ -1310,14 +1315,9 @@ class CarePlanGenerator:
             for c in profile.conditions
         ):
 
-            goals.append(
-                {
-                    "reference": {
-                        "display":
-                            "Maintain stable "
-                            "blood glucose"
-                    }
-                }
+            add_goal(
+                "goal-blood-glucose",
+                "Maintain stable blood glucose",
             )
 
             activities.append(
@@ -1340,13 +1340,9 @@ class CarePlanGenerator:
             for c in profile.conditions
         ):
 
-            goals.append(
-                {
-                    "reference": {
-                        "display":
-                            "Support wound healing"
-                    }
-                }
+            add_goal(
+                "goal-wound-healing",
+                "Support wound healing",
             )
 
             activities.append(
@@ -1373,13 +1369,15 @@ class CarePlanGenerator:
                 "Synthetic nursing care plan "
                 "generated for testing.",
 
+            "contained": contained_goals,
+
             "subject": {
                 "reference": patient_ref,
             },
 
             "created": authored,
 
-            "goal": goals,
+            "goal": goal_references,
 
             "activity": activities,
         }

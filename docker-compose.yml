@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: hapi
       POSTGRES_USER: hapi
-      POSTGRES_PASSWORD: hapi_password
+      POSTGRES_PASSWORD: ${HAPI_DB_PASSWORD:?Set HAPI_DB_PASSWORD in .env}
     volumes:
       - hapi-postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -14,22 +14,27 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
+    networks:
+      - hapi-data
 
   hapi-fhir:
-    image: hapiproject/hapi:latest
+    image: hapiproject/hapi:v8.10.0-2
     container_name: hapi-fhir
-    ports:
-      - "8080:8080"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/hapi
       SPRING_DATASOURCE_USERNAME: hapi
-      SPRING_DATASOURCE_PASSWORD: hapi_password
+      SPRING_DATASOURCE_PASSWORD: ${HAPI_DB_PASSWORD:?Set HAPI_DB_PASSWORD in .env}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - clinical
+      - hapi-data
 
   backend:
     build:
@@ -37,10 +42,25 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       FHIR_SERVER_URL: http://hapi-fhir:8080/fhir
+      FHIR_CONNECT_TIMEOUT: ${FHIR_CONNECT_TIMEOUT:-3.05}
+      FHIR_READ_TIMEOUT: ${FHIR_READ_TIMEOUT:-15}
+      FHIR_RETRY_TOTAL: ${FHIR_RETRY_TOTAL:-2}
+      FHIR_MAX_RESPONSE_BYTES: ${FHIR_MAX_RESPONSE_BYTES:-10485760}
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/health-interop/protocol/openid-connect/certs
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}/realms/health-interop
+      KEYCLOAK_API_AUDIENCE: monitoring-pflege-api
+      KEYCLOAK_ALLOWED_CLIENT_ID: monitoring-frontend
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
-      - hapi-fhir
+      hapi-fhir:
+        condition: service_started
+      keycloak-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - edge
+      - clinical
 
   frontend:
     build:
@@ -48,10 +68,97 @@ services:
       dockerfile: frontend/Dockerfile
     environment:
       BACKEND_API_URL: http://backend:8000
+      OIDC_CLIENT_ID: monitoring-frontend
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
+      OIDC_COOKIE_SECRET: ${OIDC_COOKIE_SECRET:?Set OIDC_COOKIE_SECRET in .env}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/oauth2callback}
+      OIDC_SERVER_METADATA_URL: http://keycloak:8080/realms/health-interop/.well-known/openid-configuration
     ports:
-      - "8501:8501"
+      - "127.0.0.1:8501:8501"
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+      keycloak-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - edge
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.3
+    container_name: keycloak
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_NAME:?Set KEYCLOAK_NAME in .env}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_PASSWORD:?Set KEYCLOAK_PASSWORD in .env}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/oauth2callback}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:?Set DEMO_USER_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./keycloak/health-interop-realm.json:/opt/keycloak/data/import/health-interop-realm.json:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    command: ["start-dev", "--import-realm"]
+    restart: unless-stopped
+    networks:
+      - edge
+      - keycloak-data
+
+  keycloak-db:
+    image: postgres:16
+    container_name: keycloak-postgres
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+    volumes:
+      - keycloak-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - keycloak-data
+
+  keycloak-init:
+    image: quay.io/keycloak/keycloak:26.7.3
+    environment:
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_NAME:?Set KEYCLOAK_NAME in .env}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_PASSWORD:?Set KEYCLOAK_PASSWORD in .env}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/oauth2callback}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:?Set DEMO_USER_PASSWORD in .env}
+    volumes:
+      - ./keycloak/init-keycloak.sh:/opt/keycloak-init/init-keycloak.sh:ro
+      - ./keycloak/health-interop-realm.json:/opt/keycloak-init/health-interop-realm.json:ro
+    depends_on:
+      - keycloak
+    entrypoint: ["/bin/sh", "/opt/keycloak-init/init-keycloak.sh"]
+    restart: "no"
+    networks:
+      - edge
 
 volumes:
-  hapi-postgres-data: 
+  hapi-postgres-data:
+  keycloak-postgres-data:
+
+networks:
+  edge:
+  clinical:
+    internal: true
+  hapi-data:
+    internal: true
+  keycloak-data:
+    internal: true

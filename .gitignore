@@ -1,3 +1,9 @@
 .env
 
 .venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+audit.log
+frontend/.streamlit/secrets*.toml
+!frontend/.streamlit/secrets.toml.example

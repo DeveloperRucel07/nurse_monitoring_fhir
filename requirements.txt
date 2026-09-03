@@ -3,6 +3,7 @@ annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
 attrs==26.1.0
+Authlib==1.8.0
 bcrypt==5.0.0
 black==26.5.1
 blinker==1.9.0
@@ -26,6 +27,7 @@ isort==8.0.1
 itsdangerous==2.2.0
 Jinja2==3.1.6
 joblib==1.5.3
+joserfc==1.7.5
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 MarkupSafe==3.0.3

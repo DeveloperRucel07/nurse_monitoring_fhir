@@ -28,8 +28,10 @@ Pflege Monitoring FHIR ist eine containerisierte Demo-Anwendung für die pfleger
 
 ```mermaid
 flowchart LR
-		U[Pflegefachperson] --> FE[Streamlit Dashboard :8501]
-		FE -->|HTTP| BE[FastAPI Backend :8000]
+		U[Pflegefachperson] -->|OIDC Login| KC[Keycloak :8081]
+		U --> FE[Streamlit Dashboard :8501]
+		FE -->|Bearer Access-Token| BE[FastAPI Backend :8000]
+		BE -->|Signatur + Rollen prüfen| KC
 		BE -->|FHIR REST| FHIR[HAPI FHIR :8080/fhir]
 		BE --> ML[ML Risikomodelle]
 		FHIR --> DB[(PostgreSQL)]
@@ -43,11 +45,23 @@ flowchart LR
 | Datenbank | PostgreSQL 16 | Persistenz für HAPI FHIR |
 | ML | scikit-learn / joblib | Synthetische Pflege-Risikoeinschätzungen |
 
+### Zugriffsschutz
+
+- Nicht angemeldete Personen werden vom Dashboard direkt zur Keycloak-Anmeldung weitergeleitet.
+- Das Backend validiert Signatur, Ablaufzeit, Issuer, Audience und autorisierten Client jedes Access-Tokens.
+- Die Client-Rollen `pflege_read`, `pflege_write`, `pflege_delete` und `pflege_admin` begrenzen Lese-, Schreib- und Löschzugriffe.
+- HAPI FHIR und beide Datenbanken sind nur in internen Docker-Netzen erreichbar. Klinische Daten sind nicht über einen eigenen Host-Port zugänglich.
+- API-Zugriffe werden strukturiert mit Request-ID, Status, Route und Benutzerkennung protokolliert; Patientendaten und Token werden nicht in das Audit-Log geschrieben.
+
+Die Compose-Konfiguration ist für die lokale Entwicklung an `127.0.0.1` gebunden. Für einen extern erreichbaren Produktivbetrieb sind zusätzlich TLS an einem Reverse Proxy und Keycloak im Produktionsmodus erforderlich.
+
 ### Schnellstart mit Docker
 
 Voraussetzung: Docker Desktop mit Docker Compose.
 
 ```powershell
+Copy-Item .env.example .env
+# Alle Werte mit "replace-with-a-random-value" durch starke, unterschiedliche Secrets ersetzen.
 docker compose up --build
 ```
 
@@ -57,7 +71,9 @@ Beim ersten Start lädt Docker die HAPI- und PostgreSQL-Images und installiert d
 | --- | --- |
 | Pflege-Dashboard | http://localhost:8501 |
 | Backend-API / OpenAPI | http://localhost:8000/docs |
-| HAPI-FHIR-Server | http://localhost:8080/fhir |
+| Keycloak | http://localhost:8081 |
+
+Der HAPI-FHIR-Server besitzt absichtlich keine öffentliche Adresse. Zugriffe erfolgen ausschließlich über das authentifizierte Backend.
 
 Zum Beenden:
 
@@ -65,7 +81,7 @@ Zum Beenden:
 docker compose down
 ```
 
-Die FHIR-Daten bleiben im benannten Docker-Volume `hapi-postgres-data` erhalten. Für einen vollständigen Neustart mit leeren Daten:
+Die FHIR- und Keycloak-Daten bleiben in benannten Docker-Volumes erhalten. Achtung: Der folgende Befehl löscht sowohl klinische Daten als auch die komplette Benutzer- und Rollenkonfiguration unwiderruflich:
 
 ```powershell
 docker compose down -v
@@ -73,13 +89,14 @@ docker compose down -v
 
 ### Anwendung bedienen
 
-1. Öffne das Dashboard unter http://localhost:8501.
-2. Lege unter **Patient aufnehmen** einen Patienten an.
-3. Öffne **Patienten**, suche den Patienten und wähle ihn aus.
-4. Bearbeite bei Bedarf die Stammdaten oder lösche den Patienten nach ausdrücklicher Bestätigung.
-5. Dokumentiere unter **Übersicht** oder **Observationen** die Vitalzeichen und Assessments.
-6. Verwende in der Patientenübersicht die **Pflegeakte**, um Diagnosen, Medikamente, Allergien, Pflegeberichte und Maßnahmen zu dokumentieren.
-7. Öffne **Observationen**, um den Verlauf als Kurve und den automatisch erzeugten Patientenbericht zu sehen.
+1. Öffne das Dashboard unter http://localhost:8501. Ohne aktive Sitzung folgt sofort die Keycloak-Anmeldung.
+2. Melde dich beim ersten lokalen Start mit `pflege.demo` und dem in `.env` gesetzten `DEMO_USER_PASSWORD` an und ändere das temporäre Kennwort.
+3. Lege unter **Patient aufnehmen** einen Patienten an.
+4. Öffne **Patienten**, suche den Patienten und wähle ihn aus.
+5. Bearbeite bei Bedarf die Stammdaten. Löschen erfordert zusätzlich `pflege_delete` oder `pflege_admin`.
+6. Dokumentiere unter **Übersicht** oder **Observationen** die Vitalzeichen und Assessments.
+7. Verwende in der Patientenübersicht die **Pflegeakte**, um Diagnosen, Medikamente, Allergien, Pflegeberichte und Maßnahmen zu dokumentieren.
+8. Öffne **Observationen**, um den Verlauf als Kurve und den automatisch erzeugten Patientenbericht zu sehen.
 
 ### FHIR-Ressourcen
 
@@ -126,9 +143,9 @@ Die interaktive und vollständige API-Beschreibung steht nach dem Start unter ht
 
 Erlaubte Werte für `record_type` sind `Condition`, `MedicationStatement`, `AllergyIntolerance`, `ClinicalImpression` und `CarePlan`.
 
-### Lokale Entwicklung ohne Docker
+### Lokale Entwicklung
 
-Voraussetzungen: Python 3.12, ein erreichbarer FHIR-Server und die Abhängigkeiten aus `requirements.txt`.
+Für den vollständigen Authentifizierungsfluss wird Docker Compose empfohlen. Python-Tests können unabhängig davon lokal ausgeführt werden:
 
 ```powershell
 python -m venv .venv
@@ -136,17 +153,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-In zwei Terminals starten:
-
 ```powershell
-$env:FHIR_SERVER_URL = "http://localhost:8080/fhir"
-uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-```powershell
-$env:BACKEND_API_URL = "http://localhost:8000"
-$env:PYTHONPATH = (Get-Location).Path
-streamlit run frontend/app.py
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 ### Konfiguration
@@ -154,10 +162,18 @@ streamlit run frontend/app.py
 | Variable | Standardwert | Verwendung |
 | --- | --- | --- |
 | `FHIR_SERVER_URL` | `http://localhost:8080/fhir` | FHIR-Basisadresse im Backend |
+| `FHIR_CONNECT_TIMEOUT` | `3.05` | Verbindungs-Timeout zum FHIR-Server in Sekunden |
+| `FHIR_READ_TIMEOUT` | `15` | Lese-Timeout zum FHIR-Server in Sekunden |
+| `FHIR_RETRY_TOTAL` | `2` | Wiederholungen ausschließlich für idempotente FHIR-Lesezugriffe |
+| `FHIR_MAX_RESPONSE_BYTES` | `10485760` | Maximale Größe einer FHIR-Antwort |
 | `BACKEND_API_URL` | `http://localhost:8000` | Backend-Basisadresse im Frontend |
-| `BACKEND_API_TOKEN` | nicht gesetzt | Optionaler Bearer-Token für Frontend-Anfragen |
+| `KEYCLOAK_ISSUER` | lokaler Realm | Erwarteter Token-Issuer |
+| `KEYCLOAK_API_AUDIENCE` | `monitoring-pflege-api` | Erforderliche Token-Audience und Rollen-Client |
+| `OIDC_CLIENT_SECRET` | kein Standardwert | Vertrauliches Frontend-Client-Secret |
+| `OIDC_COOKIE_SECRET` | kein Standardwert | Signatur-Secret für die Streamlit-Sitzung |
+| `DEMO_USER_PASSWORD` | kein Standardwert | Temporäres Kennwort des lokalen Demo-Benutzers |
 
-Im Docker-Netzwerk werden die internen Namen `hapi-fhir` und `backend` verwendet. Die Zuordnung erfolgt in [docker-compose.yml](docker-compose.yml).
+Alle erforderlichen Werte sind in [.env.example](.env.example) dokumentiert. Echte Secrets gehören ausschließlich in die ignorierte `.env`-Datei.
 
 ### Projektstruktur
 
@@ -212,8 +228,10 @@ Pflege Monitoring FHIR is a containerized demonstration application for nursing 
 
 ```mermaid
 flowchart LR
-		U[Nursing professional] --> FE[Streamlit Dashboard :8501]
-		FE -->|HTTP| BE[FastAPI Backend :8000]
+		U[Nursing professional] -->|OIDC login| KC[Keycloak :8081]
+		U --> FE[Streamlit Dashboard :8501]
+		FE -->|Bearer access token| BE[FastAPI Backend :8000]
+		BE -->|Verify token + roles| KC
 		BE -->|FHIR REST| FHIR[HAPI FHIR :8080/fhir]
 		BE --> ML[ML risk models]
 		FHIR --> DB[(PostgreSQL)]
@@ -227,11 +245,22 @@ flowchart LR
 | Database | PostgreSQL 16 | Persistence layer for HAPI FHIR |
 | ML | scikit-learn / joblib | Synthetic nursing risk assessments |
 
+### Access Control
+
+- Unauthenticated visitors are redirected directly to Keycloak.
+- The backend validates token signature, expiry, issuer, audience, and authorized client.
+- Client roles separate read, write, delete, and administrative access.
+- HAPI FHIR and both databases are only reachable through internal Docker networks.
+
+The Compose setup binds its public services to `127.0.0.1` for local development. An externally reachable production deployment additionally requires TLS at a reverse proxy and Keycloak production mode.
+
 ### Quick Start with Docker
 
 Requirement: Docker Desktop with Docker Compose.
 
 ```powershell
+Copy-Item .env.example .env
+# Replace every placeholder with a strong, unique secret.
 docker compose up --build
 ```
 
@@ -241,7 +270,9 @@ On the first run, Docker downloads the HAPI and PostgreSQL images and installs t
 | --- | --- |
 | Nursing dashboard | http://localhost:8501 |
 | Backend API / OpenAPI | http://localhost:8000/docs |
-| HAPI FHIR server | http://localhost:8080/fhir |
+| Keycloak | http://localhost:8081 |
+
+HAPI FHIR intentionally has no public host address. All clinical access goes through the authenticated backend.
 
 Stop the stack:
 
@@ -249,7 +280,7 @@ Stop the stack:
 docker compose down
 ```
 
-FHIR data is retained in the named Docker volume `hapi-postgres-data`. To remove all data and start fresh:
+FHIR and Keycloak data are retained in named Docker volumes. Warning: the following command irreversibly deletes clinical data as well as users and roles:
 
 ```powershell
 docker compose down -v
@@ -257,13 +288,14 @@ docker compose down -v
 
 ### Dashboard Workflow
 
-1. Open the dashboard at http://localhost:8501.
-2. Create a patient under **Patient aufnehmen**.
-3. Open **Patienten**, search for the patient, and select the record.
-4. Edit demographic details or delete the patient after explicit confirmation when necessary.
-5. Record vital signs and assessments under **Übersicht** or **Observationen**.
-6. Use the **Pflegeakte** section in the patient overview to document diagnoses, medications, allergies, nursing reports, and care interventions.
-7. Open **Observationen** to review trend charts and the generated patient report.
+1. Open the dashboard at http://localhost:8501. Without a session, it immediately opens Keycloak login.
+2. On the first local start, sign in as `pflege.demo` with `DEMO_USER_PASSWORD` from `.env` and change the temporary password.
+3. Create a patient under **Patient aufnehmen**.
+4. Open **Patienten**, search for the patient, and select the record.
+5. Edit demographic details. Deletion additionally requires `pflege_delete` or `pflege_admin`.
+6. Record vital signs and assessments under **Übersicht** or **Observationen**.
+7. Use the **Pflegeakte** section in the patient overview to document diagnoses, medications, allergies, nursing reports, and care interventions.
+8. Open **Observationen** to review trend charts and the generated patient report.
 
 ### FHIR Resources
 
@@ -310,9 +342,9 @@ After startup, the interactive and complete API documentation is available at ht
 
 Allowed `record_type` values are `Condition`, `MedicationStatement`, `AllergyIntolerance`, `ClinicalImpression`, and `CarePlan`.
 
-### Local Development without Docker
+### Local Development
 
-Requirements: Python 3.12, a reachable FHIR server, and the dependencies in `requirements.txt`.
+Docker Compose is recommended for the complete authentication flow. Python tests can run locally without it:
 
 ```powershell
 python -m venv .venv
@@ -320,17 +352,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Start the services in two terminals:
-
 ```powershell
-$env:FHIR_SERVER_URL = "http://localhost:8080/fhir"
-uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-```powershell
-$env:BACKEND_API_URL = "http://localhost:8000"
-$env:PYTHONPATH = (Get-Location).Path
-streamlit run frontend/app.py
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 ### Configuration
@@ -338,10 +361,18 @@ streamlit run frontend/app.py
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FHIR_SERVER_URL` | `http://localhost:8080/fhir` | FHIR base URL used by the backend |
+| `FHIR_CONNECT_TIMEOUT` | `3.05` | FHIR connection timeout in seconds |
+| `FHIR_READ_TIMEOUT` | `15` | FHIR read timeout in seconds |
+| `FHIR_RETRY_TOTAL` | `2` | Retries for idempotent FHIR reads only |
+| `FHIR_MAX_RESPONSE_BYTES` | `10485760` | Maximum FHIR response size |
 | `BACKEND_API_URL` | `http://localhost:8000` | Backend base URL used by the frontend |
-| `BACKEND_API_TOKEN` | unset | Optional bearer token for frontend requests |
+| `KEYCLOAK_ISSUER` | local realm | Expected token issuer |
+| `KEYCLOAK_API_AUDIENCE` | `monitoring-pflege-api` | Required token audience and role client |
+| `OIDC_CLIENT_SECRET` | no default | Confidential frontend client secret |
+| `OIDC_COOKIE_SECRET` | no default | Streamlit session-signing secret |
+| `DEMO_USER_PASSWORD` | no default | Temporary local demo-user password |
 
-Within Docker, the internal service names are `hapi-fhir` and `backend`. They are configured in [docker-compose.yml](docker-compose.yml).
+All required values are documented in [.env.example](.env.example). Real secrets belong only in the ignored `.env` file.
 
 ### Project Structure
 

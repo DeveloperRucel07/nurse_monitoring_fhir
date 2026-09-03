@@ -14,16 +14,23 @@ class FhirApiClient:
 
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         self.base_url = (base_url or os.getenv("BACKEND_API_URL", "http://localhost:8000")).rstrip("/")
-        self.token = token or os.getenv("BACKEND_API_TOKEN")
+        if not token:
+            raise ApiError("Für den API-Zugriff ist eine Anmeldung erforderlich.")
+        self.token = token
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         headers = {"Accept": "application/fhir+json"}
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        headers["Authorization"] = f"Bearer {self.token}"
         try:
             response = requests.request(method, f"{self.base_url}{path}", headers=headers, timeout=10, **kwargs)
             response.raise_for_status()
             return response.json() if response.content else None
+        except requests.HTTPError as exc:
+            if exc.response.status_code == 401:
+                raise ApiError("Die Anmeldung ist abgelaufen. Bitte erneut anmelden.") from exc
+            if exc.response.status_code == 403:
+                raise ApiError("Für diese Aktion fehlt die erforderliche Berechtigung.") from exc
+            raise ApiError(f"Die Anfrage wurde abgelehnt (HTTP {exc.response.status_code}).") from exc
         except requests.RequestException as exc:
             raise ApiError("Backend ist momentan nicht erreichbar.") from exc
 

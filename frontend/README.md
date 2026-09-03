@@ -1,14 +1,19 @@
 # Pflege-Monitoring Dashboard
 
-Streamlit frontend for the FastAPI/FHIR backend.
+Streamlit frontend for the authenticated FastAPI/FHIR backend.
 
 ## Start
 
-From the repository root:
+Use Docker Compose from the repository root so Keycloak, the runtime-only OIDC
+configuration, and the backend are configured together:
 
 ```powershell
-$env:BACKEND_API_URL = "http://localhost:8000"
-streamlit run frontend/app.py
+Copy-Item .env.example .env
+docker compose up --build
 ```
 
-Optional: set `BACKEND_API_TOKEN` when the backend is configured to require a bearer token. The dashboard does not persist patient data locally and sends requests only through the backend API.
+Opening http://localhost:8501 without an active session redirects directly to
+Keycloak. The access token is taken from the authenticated Streamlit session and
+is never configured as a static environment token. The dashboard does not
+persist patient data locally and sends clinical requests only through the
+backend API.

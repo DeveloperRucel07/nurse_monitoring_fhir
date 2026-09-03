@@ -1,10 +1,13 @@
 [theme]
-primaryColor = "#2f7d68"
-backgroundColor = "#f4f7f5"
-secondaryBackgroundColor = "#e7efeb"
-textColor = "#19323a"
+primaryColor = "#087E8B"
+backgroundColor = "#F4F7F8"
+secondaryBackgroundColor = "#EAF0F2"
+textColor = "#15272E"
 font = "sans serif"
 
 [server]
 headless = true
 enableXsrfProtection = true
+
+[secrets]
+files = [".streamlit/secrets.runtime.toml"]

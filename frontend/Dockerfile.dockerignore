@@ -1,9 +1,11 @@
 .git
+.env
 .venv
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+frontend/.streamlit/secrets*.toml
 backend/
 scripts/
 fall_risk_model.joblib

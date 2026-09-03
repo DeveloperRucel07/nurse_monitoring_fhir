@@ -1,4 +1,5 @@
 from datetime import datetime
+from html import escape
 from pathlib import Path
 import sys
 
@@ -14,32 +15,122 @@ from frontend.domain.models import Patient, parse_patient, parse_observation
 from frontend.infrastructure.api_client import ApiError, FhirApiClient
 from frontend.presentation.components import risk_card
 
-st.set_page_config(page_title="Pflege-Monitoring", page_icon="✚", layout="wide", initial_sidebar_state="expanded")
-st.markdown("""<style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono&display=swap');
-:root { --ink:#19323a; --muted:#6b7d80; --paper:#f4f7f5; --line:#dbe5e1; --teal:#2f7d68; --mint:#dceee7; --coral:#c2413b; }
-html, body, [class*="css"] { font-family:'DM Sans',sans-serif; color:var(--ink); }
-.stApp { background:var(--paper); }
-.block-container { max-width:1220px; padding-top:2.5rem; }
-[data-testid="stSidebar"] { background:#19323a; }
-[data-testid="stSidebar"] * { color:#eff8f3; }
-[data-testid="stSidebar"] .stCaption { color:#aec6bf; }
-h1, h2, h3 { letter-spacing:0; }
-.eyebrow { color:var(--teal); font:600 0.76rem 'Space Mono',monospace; letter-spacing:0; text-transform:uppercase; }
-.hero { border-bottom:1px solid var(--line); padding-bottom:1.5rem; margin-bottom:1.5rem; }
-.hero h1 { font-size:2.45rem; margin:.25rem 0 .35rem; }
-.hero p { color:var(--muted); margin:0; }
-.risk-card { background:white; border:1px solid var(--line); padding:1.15rem; margin:.5rem 0; border-radius:6px; }
-.risk-heading { display:flex; justify-content:space-between; font-weight:600; font-size:1.02rem; }
-.risk-heading strong { font-size:1.35rem; }
-.risk-bar { background:#e9efec; height:7px; margin:.85rem 0 .65rem; border-radius:10px; overflow:hidden; }
-.risk-bar span { display:block; height:100%; border-radius:10px; }
-.risk-meta { display:flex; justify-content:space-between; gap:1rem; color:var(--muted); font-size:.78rem; }
-.patient-chip { background:var(--mint); padding:.8rem 1rem; border-radius:6px; margin:.5rem 0 1rem; }
-[data-testid="stMetric"] { background:white; border:1px solid var(--line); padding:1rem; border-radius:6px; }
-</style>""", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="Pflege-Monitoring",
+    page_icon="✚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-client = FhirApiClient()
+if not st.user.is_logged_in:
+    st.login("keycloak")
+    st.stop()
+
+access_token = st.user.tokens.get("access")
+if not isinstance(access_token, str) or not access_token:
+    st.error("Die Anmeldung enthält keinen Zugriffsschlüssel. Bitte erneut anmelden.")
+    if st.button("Erneut anmelden"):
+        st.logout()
+    st.stop()
+
+st.markdown(
+    """<style>
+:root {
+  --ink:#15272e; --muted:#60747b; --paper:#f4f7f8; --surface:#ffffff;
+  --line:#dce6e9; --teal:#087e8b; --teal-dark:#075d68; --mint:#dff3f1;
+  --navy:#102a33; --navy-soft:#183b46; --coral:#d4584d; --amber:#c9811d;
+}
+html, body, [class*="css"] {
+  font-family:Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color:var(--ink);
+}
+.stApp {
+  background:
+    radial-gradient(circle at 78% 0%, rgba(8,126,139,.09), transparent 28rem),
+    var(--paper);
+}
+.block-container { max-width:1280px; padding:2.1rem 2.5rem 4rem; }
+#MainMenu, footer { visibility:hidden; }
+[data-testid="stSidebar"] { background:linear-gradient(180deg, var(--navy) 0%, #0b2027 100%); }
+[data-testid="stSidebar"] > div { padding-top:1.25rem; }
+[data-testid="stSidebar"] * { color:#edf7f7; }
+[data-testid="stSidebar"] .stCaption { color:#9eb6bc; }
+[data-testid="stSidebar"] [role="radiogroup"] { gap:.35rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  padding:.68rem .8rem; border-radius:9px; transition:background .16s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background:rgba(255,255,255,.07); }
+.brand { display:flex; align-items:center; gap:.75rem; margin:.2rem 0 1.7rem; }
+.brand-mark {
+  display:grid; place-items:center; width:2.25rem; height:2.25rem; border-radius:10px;
+  background:#48c4bd; color:#082c33; font-weight:800; font-size:1.25rem;
+  box-shadow:0 8px 24px rgba(0,0,0,.18);
+}
+.brand-name { font-size:1rem; font-weight:750; letter-spacing:-.01em; }
+.brand-sub { color:#9eb6bc; font-size:.72rem; margin-top:.08rem; }
+.account-card {
+  margin-top:1rem; padding:.85rem; border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.045); border-radius:10px;
+}
+.account-name { font-weight:650; font-size:.86rem; }
+.account-mail { color:#9eb6bc; font-size:.72rem; overflow:hidden; text-overflow:ellipsis; }
+h1, h2, h3 { letter-spacing:-.025em; color:var(--ink); }
+h2 { font-size:1.35rem; }
+.eyebrow {
+  color:var(--teal); font-size:.7rem; font-weight:750; letter-spacing:.12em;
+  text-transform:uppercase; margin-bottom:.5rem;
+}
+.hero {
+  display:flex; justify-content:space-between; align-items:flex-end; gap:2rem;
+  padding:0 0 1.35rem; margin-bottom:1.65rem; border-bottom:1px solid var(--line);
+}
+.hero h1 { font-size:clamp(2rem,4vw,3rem); line-height:1.05; margin:0 0 .45rem; }
+.hero p { color:var(--muted); margin:0; max-width:48rem; font-size:.98rem; }
+.hero-state { color:var(--teal-dark); font-size:.78rem; font-weight:650; white-space:nowrap; }
+.hero-state:before {
+  content:""; display:inline-block; width:.48rem; height:.48rem; border-radius:50%;
+  margin-right:.45rem; background:#22a699; box-shadow:0 0 0 4px rgba(34,166,153,.12);
+}
+[data-testid="stForm"], [data-testid="stExpander"], [data-testid="stMetric"] {
+  background:rgba(255,255,255,.92); border:1px solid var(--line); border-radius:14px;
+  box-shadow:0 8px 28px rgba(21,39,46,.045);
+}
+[data-testid="stForm"] { padding:1.25rem; }
+[data-testid="stMetric"] { padding:1.05rem 1.15rem; }
+[data-testid="stMetricValue"] { color:var(--navy); letter-spacing:-.03em; }
+.stButton > button, [data-testid="stFormSubmitButton"] > button {
+  min-height:2.7rem; border-radius:9px; font-weight:650; border-color:#cbdadd;
+}
+.stButton > button[kind="primary"], [data-testid="stFormSubmitButton"] > button[kind="primary"] {
+  background:var(--teal); border-color:var(--teal); color:white;
+  box-shadow:0 7px 18px rgba(8,126,139,.16);
+}
+.stTabs [data-baseweb="tab-list"] { gap:1.25rem; border-bottom:1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { padding:.75rem .15rem; font-weight:650; }
+div[data-baseweb="input"], div[data-baseweb="select"] > div, textarea {
+  border-radius:9px !important; border-color:#cfdde1 !important; background:white !important;
+}
+.risk-card {
+  background:var(--surface); border:1px solid var(--line); padding:1.05rem 1.1rem;
+  margin:.65rem 0; border-radius:12px; box-shadow:0 8px 24px rgba(21,39,46,.04);
+}
+.risk-heading { display:flex; justify-content:space-between; gap:1rem; font-weight:650; font-size:.95rem; }
+.risk-heading strong { font-size:1.28rem; letter-spacing:-.03em; }
+.risk-bar { background:#e8eff1; height:6px; margin:.8rem 0 .65rem; border-radius:10px; overflow:hidden; }
+.risk-bar span { display:block; height:100%; border-radius:10px; }
+.risk-meta { display:flex; justify-content:space-between; gap:1rem; color:var(--muted); font-size:.74rem; }
+.patient-chip { background:var(--mint); padding:.8rem 1rem; border-radius:9px; margin:.5rem 0 1rem; }
+@media (max-width:760px) {
+  .block-container { padding:1.25rem 1rem 3rem; }
+  .hero { display:block; }
+  .hero-state { display:block; margin-top:.9rem; }
+  .risk-meta { display:block; }
+}
+</style>""",
+    unsafe_allow_html=True,
+)
+
+client = FhirApiClient(token=access_token)
 if "selected_patient" not in st.session_state:
     st.session_state.selected_patient = None
 
@@ -54,6 +145,23 @@ def api_call(action):
 
 def patient_label(patient: Patient) -> str:
     return f"{patient.display_name or 'Unbenannt'} · {patient.id}"
+
+
+def page_header(eyebrow: str, title: str, description: str, state: str = "Sicher verbunden") -> None:
+    """Render a compact page header without trusting dynamic HTML values."""
+    st.markdown(
+        (
+            '<div class="eyebrow">{eyebrow}</div>'
+            '<div class="hero"><div><h1>{title}</h1><p>{description}</p></div>'
+            '<span class="hero-state">{state}</span></div>'
+        ).format(
+            eyebrow=escape(eyebrow),
+            title=escape(title),
+            description=escape(description),
+            state=escape(state),
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def observation_status_label(status: str) -> str:
@@ -229,15 +337,34 @@ def clinical_record_panel(
 
 
 with st.sidebar:
-    st.markdown("## ✚ Pflege-Monitoring")
-    st.caption("FHIR · klinische Übersicht")
+    st.markdown(
+        '<div class="brand"><span class="brand-mark">+</span><div>'
+        '<div class="brand-name">Pflege-Monitoring</div>'
+        '<div class="brand-sub">FHIR · klinische Übersicht</div></div></div>',
+        unsafe_allow_html=True,
+    )
     page = st.radio("Bereich", ["Übersicht", "Patienten", "Patient aufnehmen", "Observationen"], label_visibility="collapsed")
     st.divider()
-    st.caption("Datenschutzmodus aktiv")
-    st.caption("Keine Gesundheitsdaten werden lokal gespeichert.")
+    user_name = st.user.get("name") or st.user.get("preferred_username") or "Angemeldete Person"
+    user_email = st.user.get("email") or "Keycloak-Identität"
+    st.markdown(
+        '<div class="account-card"><div class="account-name">{name}</div>'
+        '<div class="account-mail">{email}</div></div>'.format(
+            name=escape(str(user_name)),
+            email=escape(str(user_email)),
+        ),
+        unsafe_allow_html=True,
+    )
+    if st.button("Sicher abmelden", use_container_width=True):
+        st.logout()
+    st.caption("Geschützte Sitzung · rollenbasierter Zugriff")
 
 if page == "Patient aufnehmen":
-    st.markdown('<div class="eyebrow">Neuer Datensatz</div><div class="hero"><h1>Patient aufnehmen</h1><p>Erstelle einen neuen FHIR-Patienten für das Pflege-Monitoring.</p></div>', unsafe_allow_html=True)
+    page_header(
+        "Neuer Datensatz",
+        "Patient aufnehmen",
+        "Erstelle einen neuen FHIR-Patienten für das Pflege-Monitoring.",
+    )
     with st.form("create_patient"):
         first, last = st.columns(2)
         given = first.text_input("Vorname", max_chars=80)
@@ -256,7 +383,11 @@ if page == "Patient aufnehmen":
                 st.info("Wechsle zu Patienten, um Beobachtungen und Risiken zu erfassen.")
 
 elif page == "Patienten":
-    st.markdown('<div class="eyebrow">Patientenakte</div><div class="hero"><h1>Patienten</h1><p>Suche und öffne eine sichere, fokussierte Patientenansicht.</p></div>', unsafe_allow_html=True)
+    page_header(
+        "Patientenakte",
+        "Patienten",
+        "Suche und öffne eine sichere, fokussierte Patientenansicht.",
+    )
     family, given, birthdate = st.columns(3)
     family_name = family.text_input("Nachname", placeholder="z. B. Mustermann")
     given_name = given.text_input("Vorname")
@@ -330,7 +461,11 @@ elif page == "Patienten":
                         st.rerun()
 
 elif page == "Observationen":
-    st.markdown('<div class="eyebrow">Patientenverlauf</div><div class="hero"><h1>Vitalzeichen und Bericht</h1><p>Verlauf prüfen, neue Messwerte erfassen und die Patientenakte zusammenfassen.</p></div>', unsafe_allow_html=True)
+    page_header(
+        "Patientenverlauf",
+        "Vitalzeichen und Bericht",
+        "Verlauf prüfen, neue Messwerte erfassen und die Patientenakte zusammenfassen.",
+    )
     family, given, birthdate = st.columns(3)
     family_name = family.text_input("Nachname suchen", placeholder="z. B. Mustermann")
     given_name = given.text_input("Vorname suchen")
@@ -382,7 +517,11 @@ elif page == "Observationen":
 else:
     selected_id = st.session_state.selected_patient
     if not selected_id:
-        st.markdown('<div class="eyebrow">Pflege-Leitstand</div><div class="hero"><h1>Guten Morgen.</h1><p>Wähle links einen Patienten aus, um Beobachtungen und Pflegerisiken zu sehen.</p></div>', unsafe_allow_html=True)
+        page_header(
+            "Pflege-Leitstand",
+            "Guten Morgen.",
+            "Wähle links einen Patienten aus, um Beobachtungen und Pflegerisiken zu sehen.",
+        )
         st.info("Noch kein Patient ausgewählt. Öffne den Bereich Patienten.")
     else:
         patient_data = api_call(lambda: client.get_patient(selected_id))
@@ -390,7 +529,12 @@ else:
         patient = parse_patient(patient_data) if patient_data else None
         observations = observations_from_bundle(observation_data or {})
         if patient:
-            st.markdown(f'<div class="eyebrow">Pflege-Leitstand · {patient.id}</div><div class="hero"><h1>{patient.display_name or "Unbenannter Patient"}</h1><p>Persönliche Daten · {patient.birth_date} · {patient.gender}</p></div>', unsafe_allow_html=True)
+            page_header(
+                "Pflege-Leitstand",
+                patient.display_name or "Unbenannter Patient",
+                f"Persönliche Daten · {patient.birth_date} · {patient.gender}",
+                state=f"Patient {patient.id}",
+            )
             left, right = st.columns([1.1, 1.9], gap="large")
             with left:
                 st.subheader("Pflegerisiken")

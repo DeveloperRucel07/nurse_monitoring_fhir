@@ -12,4 +12,4 @@ COPY frontend ./frontend
 
 EXPOSE 8501
 
-CMD ["sh", "-c", "PYTHONPATH=/app streamlit run frontend/app.py --server.address 0.0.0.0 --server.port 8501"]
+CMD ["python", "frontend/docker_entrypoint.py"]
