@@ -38,6 +38,19 @@ FHIR_BATCH_SIZE = int(
     os.getenv("FHIR_BATCH_SIZE", "10")
 )
 
+PATIENT_IDENTIFIER_SYSTEM = os.getenv(
+    "PATIENT_IDENTIFIER_SYSTEM",
+    "https://monitoring-pflege.local/identifier/patient",
+).strip()
+
+ENCOUNTER_IDENTIFIER_SYSTEM = os.getenv(
+    "ENCOUNTER_IDENTIFIER_SYSTEM",
+    "https://monitoring-pflege.local/identifier/encounter",
+).strip()
+
+if not PATIENT_IDENTIFIER_SYSTEM or not ENCOUNTER_IDENTIFIER_SYSTEM:
+    raise RuntimeError("FHIR identifier systems must not be empty.")
+
 
 # ============================================================
 # Logging
@@ -275,6 +288,12 @@ class ClinicalProfile:
 
 def make_uuid() -> str:
     return str(uuid.uuid4())
+
+
+def seed_identifier(prefix: str, sequence: int) -> str:
+    if sequence < 1:
+        raise ValueError("Seed identifier sequence must be positive.")
+    return f"{prefix}-SEED-{sequence:06d}"
 
 
 def random_birth_date(
@@ -633,10 +652,19 @@ class PatientResourceGenerator:
     @staticmethod
     def generate(
         profile: ClinicalProfile,
+        patient_number: str,
     ) -> dict[str, Any]:
 
         return {
             "resourceType": "Patient",
+
+            "identifier": [
+                {
+                    "use": "official",
+                    "system": PATIENT_IDENTIFIER_SYSTEM,
+                    "value": patient_number,
+                }
+            ],
 
             "name": [
                 {
@@ -664,6 +692,43 @@ class PatientResourceGenerator:
                     "country": "DE",
                 }
             ],
+        }
+
+
+# ============================================================
+# Encounter resource
+# ============================================================
+
+class EncounterResourceGenerator:
+
+    @staticmethod
+    def generate(
+        patient_ref: str,
+        encounter_number: str,
+        admitted_at: str,
+    ) -> dict[str, Any]:
+
+        return {
+            "resourceType": "Encounter",
+            "identifier": [
+                {
+                    "use": "official",
+                    "system": ENCOUNTER_IDENTIFIER_SYSTEM,
+                    "value": encounter_number,
+                }
+            ],
+            "status": "in-progress",
+            "class": {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                "code": "IMP",
+                "display": "inpatient encounter",
+            },
+            "subject": {
+                "reference": patient_ref,
+            },
+            "period": {
+                "start": admitted_at,
+            },
         }
 
 
@@ -1401,6 +1466,7 @@ class BundleGenerator:
 
     def generate(
         self,
+        sequence: int,
     ) -> tuple[
         ClinicalProfile,
         dict[str, Any],
@@ -1416,6 +1482,16 @@ class BundleGenerator:
             f"urn:uuid:{patient_uuid}"
         )
 
+        patient_number = seed_identifier(
+            "PAT",
+            sequence,
+        )
+
+        encounter_number = seed_identifier(
+            "FALL",
+            sequence,
+        )
+
         effective = effective_datetime(
             self.rng
         )
@@ -1428,7 +1504,8 @@ class BundleGenerator:
 
         patient = (
             PatientResourceGenerator.generate(
-                profile
+                profile,
+                patient_number,
             )
         )
 
@@ -1441,6 +1518,27 @@ class BundleGenerator:
                 "request": {
                     "method": "POST",
                     "url": "Patient",
+                },
+            }
+        )
+
+        # ----------------------------------------------------
+        # Active inpatient encounter
+        # ----------------------------------------------------
+
+        encounter = EncounterResourceGenerator.generate(
+            patient_ref,
+            encounter_number,
+            effective,
+        )
+
+        entries.append(
+            {
+                "fullUrl": f"urn:uuid:{make_uuid()}",
+                "resource": encounter,
+                "request": {
+                    "method": "POST",
+                    "url": "Encounter",
                 },
             }
         )
@@ -1822,7 +1920,9 @@ class SeedService:
                 try:
 
                     profile, bundle = (
-                        self.bundle_generator.generate()
+                        self.bundle_generator.generate(
+                            patient_number
+                        )
                     )
 
                     response = (
@@ -1837,7 +1937,9 @@ class SeedService:
                         "[%s/%s] Created %s %s "
                         "| conditions=%s "
                         "| allergies=%s "
-                        "| medications=%s",
+                        "| medications=%s "
+                        "| patient_number=%s "
+                        "| encounter_number=%s",
                         patient_number,
                         number_of_patients,
                         profile.first_name,
@@ -1845,6 +1947,8 @@ class SeedService:
                         len(profile.conditions),
                         len(profile.allergies),
                         len(profile.medications),
+                        seed_identifier("PAT", patient_number),
+                        seed_identifier("FALL", patient_number),
                     )
 
                 except Exception as exc:

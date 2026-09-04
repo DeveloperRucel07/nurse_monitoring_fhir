@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app.core import security
 from backend.app.core.exceptions import FhirValidationError
-from backend.app.local_test.seed import CarePlanGenerator, PatientGenerator
+from backend.app.local_test.seed import (
+    ENCOUNTER_IDENTIFIER_SYSTEM,
+    PATIENT_IDENTIFIER_SYSTEM,
+    BundleGenerator,
+    CarePlanGenerator,
+    PatientGenerator,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -190,3 +196,32 @@ def test_seed_care_plan_uses_valid_contained_goal_references() -> None:
         goal["subject"]["reference"] == "Patient/example"
         for goal in care_plan["contained"]
     )
+
+
+def test_seed_bundle_creates_patient_with_active_encounter_identifiers() -> None:
+    _, bundle = BundleGenerator(random.Random(1)).generate(sequence=7)
+
+    patient_entry, encounter_entry = bundle["entry"][:2]
+    patient = patient_entry["resource"]
+    encounter = encounter_entry["resource"]
+
+    assert patient["resourceType"] == "Patient"
+    assert patient["identifier"] == [
+        {
+            "use": "official",
+            "system": PATIENT_IDENTIFIER_SYSTEM,
+            "value": "PAT-SEED-000007",
+        }
+    ]
+    assert encounter["resourceType"] == "Encounter"
+    assert encounter["identifier"] == [
+        {
+            "use": "official",
+            "system": ENCOUNTER_IDENTIFIER_SYSTEM,
+            "value": "FALL-SEED-000007",
+        }
+    ]
+    assert encounter["status"] == "in-progress"
+    assert encounter["class"]["code"] == "IMP"
+    assert encounter["subject"]["reference"] == patient_entry["fullUrl"]
+    assert encounter_entry["request"] == {"method": "POST", "url": "Encounter"}

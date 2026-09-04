@@ -35,6 +35,12 @@ Die Eingabegrenzen für Vitalwerte sind Schutz gegen Übertragungs- und Eingabef
 
 Die generischen Roh-FHIR-Schreibpfade für `Patient`, `Observation` und klinische Ressourcen sind auf `pflege_admin` begrenzt. `pflege_write` darf klinische Daten ausschließlich über die engen, serverseitig gemappten Pflegeverträge erzeugen und kann deren Terminologie daher nicht über manipulierte Browseranfragen ersetzen.
 
+## Synthetische Entwicklungsdaten
+
+Der Generator `backend/app/local_test/seed.py` erzeugt jeden synthetischen Patienten zusammen mit einem aktiven stationären `Encounter` in derselben FHIR-Transaktion. Beide Ressourcen erhalten einen offiziellen Identifier aus den konfigurierten Systemen `PATIENT_IDENTIFIER_SYSTEM` und `ENCOUNTER_IDENTIFIER_SYSTEM`. Die sichtbaren Werte folgen den Formaten `PAT-SEED-000001` und `FALL-SEED-000001`.
+
+Der Generator ist für eine leere lokale Entwicklungsdatenbank vorgesehen. Dadurch kann das React-Frontend unmittelbar nach dem Seed eine Patienten- und Fallnummer anzeigen sowie Vitalmessungen und Pflegeberichte dem aktiven Fall zuordnen.
+
 ## Vitalzeichen-Codes im Bestand
 
 Die folgenden Codes werden vom bestehenden Backend beziehungsweise Seed verwendet. Ihre fachliche Terminologie und Einheiten werden in einem späteren Mapping-Schritt separat validiert; das Frontend übernimmt sie nicht unkritisch als universell gültig.
