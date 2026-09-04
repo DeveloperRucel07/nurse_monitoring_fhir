@@ -3,24 +3,26 @@ from pathlib import Path
 from typing import Any, Dict, List
 import joblib
 import pandas as pd
-import requests
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
+
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.app.fhir_ml.ml.ml_utils import (
+    CLINICAL_VALIDATION_STATUS,
+    MODEL_PURPOSE,
     RISK_FEATURE_COLUMNS,
     RISK_LABEL_CODES,
+    SYNTHETIC_LABEL_DEFINITION,
     extract_features_from_fhir,
     extract_risk_labels_from_fhir,
 )
-
-
+from backend.app.fhir_ml.fhir.FHIRclient import FHIRClient
 
 BASE_URL = os.getenv(
     "FHIR_SERVER_URL",
@@ -32,48 +34,24 @@ MODEL_DIR = Path(
         str(PROJECT_ROOT / "backend/app/fhir_ml/ml/models"),
     )
 )
+FHIR_CLIENT = FHIRClient(BASE_URL)
 
 
-def get_bundle_resources(url: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-    resources = []
-    while url:
-        response = requests.get(
-            url,
-            params=params,
-            headers={"Accept": "application/fhir+json"},
-            timeout=15,
-        )
-        response.raise_for_status()
-        bundle = response.json()
-        resources.extend(
-            entry["resource"]
-            for entry in bundle.get("entry", [])
-            if entry.get("resource")
-        )
-        next_url = None
-        for link in bundle.get("link", []):
-            if link.get("relation") == "next":
-                next_url = link.get("url")
-                break
-        url = next_url
-        params = {}
-    return resources
+def get_bundle_resources(bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [
+        entry["resource"]
+        for entry in bundle.get("entry", [])
+        if isinstance(entry, dict) and isinstance(entry.get("resource"), dict)
+    ]
 
 
 def get_all_patients() -> List[Dict[str, Any]]:
-    return get_bundle_resources(
-        f"{BASE_URL}/Patient",
-        {"_count": 200},
-    )
+    return get_bundle_resources(FHIR_CLIENT.search_patients())
 
 
 def get_observations_for_patient(patient_id: str) -> List[Dict[str, Any]]:
     return get_bundle_resources(
-        f"{BASE_URL}/Observation",
-        {
-            "subject": f"Patient/{patient_id}",
-            "_count": 200,
-        },
+        FHIR_CLIENT.search_observations(subject_reference=f"Patient/{patient_id}")
     )
 
 
@@ -92,10 +70,7 @@ def build_dataframe() -> pd.DataFrame:
             {
                 "patient_id": patient_id,
                 **features,
-                **{
-                    f"label_{risk_type}": value
-                    for risk_type, value in labels.items()
-                },
+                **{f"label_{risk_type}": value for risk_type, value in labels.items()},
             }
         )
     return pd.DataFrame(rows)
@@ -145,10 +120,12 @@ def train_risk_model(
         "risk_type": risk_type,
         "feature_columns": feature_columns,
         "label_column": label_column,
-        "label_definition": (
-            "Synthetic FHIR label; not a clinical outcome."
-        ),
+        "label_definition": SYNTHETIC_LABEL_DEFINITION,
         "training_rows": len(data),
+        "training_data_kind": "synthetic",
+        "intended_use": MODEL_PURPOSE,
+        "clinical_validation_status": CLINICAL_VALIDATION_STATUS,
+        "artifact_version": 1,
     }
 
 

@@ -46,33 +46,52 @@ services:
       FHIR_READ_TIMEOUT: ${FHIR_READ_TIMEOUT:-15}
       FHIR_RETRY_TOTAL: ${FHIR_RETRY_TOTAL:-2}
       FHIR_MAX_RESPONSE_BYTES: ${FHIR_MAX_RESPONSE_BYTES:-10485760}
+      FHIR_PAGE_SIZE: ${FHIR_PAGE_SIZE:-200}
+      FHIR_MAX_PAGES: ${FHIR_MAX_PAGES:-100}
+      FHIR_MAX_SEARCH_RESOURCES: ${FHIR_MAX_SEARCH_RESOURCES:-10000}
+      ML_MODE: ${ML_MODE:-disabled}
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/health-interop/protocol/openid-connect/certs
       KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}/realms/health-interop
       KEYCLOAK_API_AUDIENCE: monitoring-pflege-api
       KEYCLOAK_ALLOWED_CLIENT_ID: monitoring-frontend
-    ports:
-      - "127.0.0.1:8000:8000"
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8501}
+      BFF_REDIS_URL: redis://session-store:6379/0
+      BFF_SESSION_ENCRYPTION_KEY: ${BFF_SESSION_ENCRYPTION_KEY:?Set BFF_SESSION_ENCRYPTION_KEY in .env}
+      BFF_COOKIE_SECURE: ${BFF_COOKIE_SECURE:-false}
+      OIDC_CLIENT_ID: monitoring-frontend
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
+      OIDC_AUTHORIZATION_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}/realms/health-interop/protocol/openid-connect/auth
+      OIDC_TOKEN_URL: http://keycloak:8080/realms/health-interop/protocol/openid-connect/token
+      OIDC_LOGOUT_URL: http://keycloak:8080/realms/health-interop/protocol/openid-connect/logout
     depends_on:
       hapi-fhir:
         condition: service_started
       keycloak-init:
         condition: service_completed_successfully
+      session-store:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - edge
       - clinical
+      - session-data
+
+  session-store:
+    image: redis:8-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - session-data
 
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-    environment:
-      BACKEND_API_URL: http://backend:8000
-      OIDC_CLIENT_ID: monitoring-frontend
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
-      OIDC_COOKIE_SECRET: ${OIDC_COOKIE_SECRET:?Set OIDC_COOKIE_SECRET in .env}
-      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/oauth2callback}
-      OIDC_SERVER_METADATA_URL: http://keycloak:8080/realms/health-interop/.well-known/openid-configuration
     ports:
       - "127.0.0.1:8501:8501"
     depends_on:
@@ -98,7 +117,8 @@ services:
       KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
-      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/oauth2callback}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/auth/callback}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8501}
       DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:?Set DEMO_USER_PASSWORD in .env}
     ports:
       - "127.0.0.1:8081:8080"
@@ -138,7 +158,8 @@ services:
       KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_NAME:?Set KEYCLOAK_NAME in .env}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_PASSWORD:?Set KEYCLOAK_PASSWORD in .env}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET in .env}
-      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/oauth2callback}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:8501/auth/callback}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8501}
       DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:?Set DEMO_USER_PASSWORD in .env}
     volumes:
       - ./keycloak/init-keycloak.sh:/opt/keycloak-init/init-keycloak.sh:ro
@@ -161,4 +182,6 @@ networks:
   hapi-data:
     internal: true
   keycloak-data:
+    internal: true
+  session-data:
     internal: true

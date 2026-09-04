@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -11,6 +12,12 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
+from backend.app.core.bff_session import (
+    SESSION_COOKIE_NAME,
+    SessionUnavailableError,
+    load_session,
+)
+from backend.app.core.config import APP_ORIGIN
 
 KEYCLOAK_JWKS_URL = os.getenv(
     "KEYCLOAK_JWKS_URL",
@@ -53,7 +60,11 @@ def _load_public_keys(*, force_refresh: bool = False) -> dict[str, Any]:
 
     with _jwks_lock:
         now = time.monotonic()
-        if not force_refresh and _jwks_cache is not None and now < _jwks_cache_expires_at:
+        if (
+            not force_refresh
+            and _jwks_cache is not None
+            and now < _jwks_cache_expires_at
+        ):
             return _jwks_cache
 
         try:
@@ -93,7 +104,9 @@ def get_key_for_token(token: str) -> dict[str, Any]:
             if isinstance(key, dict) and key.get("kid") == kid:
                 return key
 
-    raise _authentication_error("Der Signaturschlüssel des Zugriffstokens ist unbekannt.")
+    raise _authentication_error(
+        "Der Signaturschlüssel des Zugriffstokens ist unbekannt."
+    )
 
 
 def verify_token(token: str) -> dict[str, Any]:
@@ -108,14 +121,20 @@ def verify_token(token: str) -> dict[str, Any]:
     except HTTPException:
         raise
     except JWTError as exc:
-        raise _authentication_error("Ungültiges oder abgelaufenes Zugriffstoken.") from exc
+        raise _authentication_error(
+            "Ungültiges oder abgelaufenes Zugriffstoken."
+        ) from exc
 
     if payload.get("typ") != "Bearer":
         raise _authentication_error("Für diese API ist ein Access-Token erforderlich.")
     if payload.get("azp") != ALLOWED_CLIENT_ID:
-        raise _authentication_error("Das Zugriffstoken wurde nicht für diesen Client ausgestellt.")
+        raise _authentication_error(
+            "Das Zugriffstoken wurde nicht für diesen Client ausgestellt."
+        )
     if not isinstance(payload.get("sub"), str):
-        raise _authentication_error("Das Zugriffstoken enthält keine Benutzeridentität.")
+        raise _authentication_error(
+            "Das Zugriffstoken enthält keine Benutzeridentität."
+        )
     return payload
 
 
@@ -123,10 +142,42 @@ def get_current_client(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> dict[str, Any]:
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise _authentication_error("Anmeldung erforderlich.")
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        payload = verify_token(credentials.credentials)
+        request.state.auth_mode = "bearer"
+    else:
+        session_id = request.cookies.get(SESSION_COOKIE_NAME)
+        if not session_id:
+            raise _authentication_error("Anmeldung erforderlich.")
+        try:
+            session = load_session(session_id)
+        except SessionUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Der Sitzungsdienst ist momentan nicht erreichbar.",
+            ) from exc
+        if session is None:
+            raise _authentication_error("Die Sitzung ist abgelaufen.")
+        token = session.get("token")
+        access_token = token.get("access_token") if isinstance(token, dict) else None
+        if not isinstance(access_token, str):
+            raise _authentication_error("Die Sitzung ist ungültig.")
+        payload = verify_token(access_token)
+        request.state.auth_mode = "session"
+        request.state.session = session
 
-    payload = verify_token(credentials.credentials)
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("Origin")
+            csrf_token = request.headers.get("X-CSRF-Token", "")
+            expected_csrf = session.get("csrf_token")
+            if origin != APP_ORIGIN or not (
+                isinstance(expected_csrf, str)
+                and secrets.compare_digest(csrf_token, expected_csrf)
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Die Sicherheitsprüfung der Anfrage ist fehlgeschlagen.",
+                )
     request.state.user_claims = payload
     return payload
 

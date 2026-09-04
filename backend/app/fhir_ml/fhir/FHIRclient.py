@@ -4,6 +4,7 @@ import re
 import threading
 from collections.abc import Collection
 from typing import Any
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -12,7 +13,10 @@ from urllib3.util.retry import Retry
 from backend.app.core.config import (
     BASE_URL,
     FHIR_CONNECT_TIMEOUT,
+    FHIR_MAX_PAGES,
     FHIR_MAX_RESPONSE_BYTES,
+    FHIR_MAX_SEARCH_RESOURCES,
+    FHIR_PAGE_SIZE,
     FHIR_READ_TIMEOUT,
     FHIR_RETRY_TOTAL,
 )
@@ -68,6 +72,9 @@ class FHIRClient:
         read_timeout: float = FHIR_READ_TIMEOUT,
         retries: int = FHIR_RETRY_TOTAL,
         max_response_bytes: int = FHIR_MAX_RESPONSE_BYTES,
+        page_size: int = FHIR_PAGE_SIZE,
+        max_pages: int = FHIR_MAX_PAGES,
+        max_search_resources: int = FHIR_MAX_SEARCH_RESOURCES,
         session: requests.Session | None = None,
     ) -> None:
         if connect_timeout <= 0 or read_timeout <= 0:
@@ -76,10 +83,19 @@ class FHIRClient:
             raise ValueError("FHIR retries cannot be negative")
         if max_response_bytes < 1024:
             raise ValueError("FHIR_MAX_RESPONSE_BYTES must be at least 1024")
+        if not 1 <= page_size <= 1000:
+            raise ValueError("FHIR_PAGE_SIZE must be between 1 and 1000")
+        if max_pages < 1:
+            raise ValueError("FHIR_MAX_PAGES must be greater than zero")
+        if max_search_resources < 1:
+            raise ValueError("FHIR_MAX_SEARCH_RESOURCES must be greater than zero")
 
         self.base_url = base_url.rstrip("/")
         self.timeout = (connect_timeout, read_timeout)
         self.max_response_bytes = max_response_bytes
+        self.page_size = page_size
+        self.max_pages = max_pages
+        self.max_search_resources = max_search_resources
         self._provided_session = session
         self._thread_local = threading.local()
         self._retry_policy = Retry(
@@ -227,17 +243,16 @@ class FHIRClient:
             )
         return payload
 
-    def _request(
+    def _request_url(
         self,
         method: str,
-        endpoint: str,
+        url: str,
         *,
         expected_resource_types: Collection[str] | None = None,
         validation_request: bool = False,
         expect_body: bool = True,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
         try:
             response = self.session.request(
                 method,
@@ -273,6 +288,142 @@ class FHIRClient:
             response,
             expected_resource_types=expected_resource_types,
         )
+
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        return self._request_url(
+            method,
+            f"{self.base_url}/{endpoint.lstrip('/')}",
+            **kwargs,
+        )
+
+    def _safe_next_url(self, value: str, current_url: str) -> str:
+        """Resolve a server-provided next link without allowing cross-origin access."""
+        candidate = urlsplit(urljoin(current_url, value))
+        base = urlsplit(self.base_url)
+        if (
+            candidate.scheme.lower() != base.scheme.lower()
+            or candidate.netloc.lower() != base.netloc.lower()
+        ):
+            raise FhirBadGatewayError(
+                "Der FHIR-Server hat einen unsicheren Pagination-Link geliefert."
+            )
+
+        base_path = base.path.rstrip("/")
+        candidate_path = candidate.path.rstrip("/")
+        if candidate_path != base_path and not candidate_path.startswith(
+            f"{base_path}/"
+        ):
+            raise FhirBadGatewayError(
+                "Der FHIR-Server hat einen ungültigen Pagination-Link geliefert."
+            )
+        return urlunsplit(
+            (base.scheme, base.netloc, candidate.path, candidate.query, "")
+        )
+
+    @staticmethod
+    def _bundle_entries(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+        entries = bundle.get("entry", [])
+        if not isinstance(entries, list) or not all(
+            isinstance(entry, dict) for entry in entries
+        ):
+            raise FhirBadGatewayError(
+                "Der FHIR-Server hat ein ungültiges Such-Bundle geliefert."
+            )
+        return entries
+
+    def _next_page_url(
+        self,
+        bundle: dict[str, Any],
+        current_url: str,
+    ) -> str | None:
+        links = bundle.get("link", [])
+        if not isinstance(links, list):
+            raise FhirBadGatewayError(
+                "Der FHIR-Server hat ungültige Bundle-Links geliefert."
+            )
+        next_links = [
+            link.get("url")
+            for link in links
+            if isinstance(link, dict) and link.get("relation") == "next"
+        ]
+        if not next_links:
+            return None
+        if len(next_links) != 1 or not isinstance(next_links[0], str):
+            raise FhirBadGatewayError(
+                "Der FHIR-Server hat einen ungültigen Pagination-Link geliefert."
+            )
+        return self._safe_next_url(next_links[0], current_url)
+
+    def _search_all_pages(
+        self,
+        endpoint: str,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        search_params = dict(params or {})
+        search_params["_count"] = str(self.page_size)
+        first_url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        first_page = self._request_url(
+            "GET",
+            first_url,
+            params=search_params,
+            expected_resource_types={"Bundle"},
+        )
+        assert first_page is not None
+
+        entries = list(self._bundle_entries(first_page))
+        if len(entries) > self.max_search_resources:
+            raise FhirBadGatewayError(
+                "Die FHIR-Suche überschreitet die konfigurierte Ressourcengrenze."
+            )
+
+        page_count = 1
+        next_url = self._next_page_url(first_page, first_url)
+        visited_urls: set[str] = set()
+        while next_url is not None:
+            if page_count >= self.max_pages:
+                raise FhirBadGatewayError(
+                    "Die FHIR-Suche überschreitet die konfigurierte Seitengrenze."
+                )
+            if next_url in visited_urls:
+                raise FhirBadGatewayError(
+                    "Der FHIR-Server hat eine Pagination-Schleife geliefert."
+                )
+            visited_urls.add(next_url)
+
+            page = self._request_url(
+                "GET",
+                next_url,
+                expected_resource_types={"Bundle"},
+            )
+            assert page is not None
+            entries.extend(self._bundle_entries(page))
+            if len(entries) > self.max_search_resources:
+                raise FhirBadGatewayError(
+                    "Die FHIR-Suche überschreitet die konfigurierte Ressourcengrenze."
+                )
+            page_count += 1
+            next_url = self._next_page_url(page, next_url)
+
+        result = dict(first_page)
+        if entries:
+            result["entry"] = entries
+        else:
+            result.pop("entry", None)
+        links = [
+            link
+            for link in first_page.get("link", [])
+            if isinstance(link, dict) and link.get("relation") != "next"
+        ]
+        if links:
+            result["link"] = links
+        else:
+            result.pop("link", None)
+        return result
 
     def validate_resource(self, resource_type: str, resource: dict[str, Any]) -> None:
         safe_type = self._safe_resource_type(resource_type)
@@ -373,14 +524,7 @@ class FHIRClient:
             }.items()
             if value
         }
-        result = self._request(
-            "GET",
-            "Patient",
-            params=params,
-            expected_resource_types={"Bundle"},
-        )
-        assert result is not None
-        return result
+        return self._search_all_pages("Patient", params)
 
     def create_observation(self, observation_data: dict[str, Any]) -> dict[str, Any]:
         return self.create_resource("Observation", observation_data)
@@ -404,14 +548,7 @@ class FHIRClient:
             params["subject"] = subject_reference
         if patient_name:
             params["subject:Patient.name"] = patient_name
-        result = self._request(
-            "GET",
-            "Observation",
-            params=params,
-            expected_resource_types={"Bundle"},
-        )
-        assert result is not None
-        return result
+        return self._search_all_pages("Observation", params)
 
     def search_resources(
         self,
@@ -422,14 +559,10 @@ class FHIRClient:
         safe_type = self._safe_resource_type(resource_type)
         if patient_parameter not in PATIENT_SEARCH_PARAMETERS:
             raise FhirRequestError("Ungültiger FHIR-Suchparameter.")
-        result = self._request(
-            "GET",
+        return self._search_all_pages(
             safe_type,
-            params={patient_parameter: f"Patient/{self._safe_id(patient_id)}"},
-            expected_resource_types={"Bundle"},
+            {patient_parameter: f"Patient/{self._safe_id(patient_id)}"},
         )
-        assert result is not None
-        return result
 
     def delete_observation(self, observation_id: str) -> None:
         self._request(

@@ -1,15 +1,16 @@
-FROM python:3.12-slim
+FROM node:24-alpine AS build
 
 WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/index.html frontend/tsconfig*.json frontend/vite.config.ts ./
+COPY frontend/src ./src
+RUN npm run build
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+FROM nginx:1.28-alpine
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY frontend ./frontend
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY frontend/security-headers.conf /etc/nginx/snippets/security-headers.conf
+COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 8501
-
-CMD ["python", "frontend/docker_entrypoint.py"]

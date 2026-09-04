@@ -129,3 +129,114 @@ def test_automatic_retries_are_limited_to_idempotent_methods() -> None:
     retry = session.adapters["http://"].max_retries
     assert retry.total == 3
     assert retry.allowed_methods == frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def test_search_combines_all_bundle_pages() -> None:
+    session = FakeSession(
+        [
+            response(
+                200,
+                {
+                    "resourceType": "Bundle",
+                    "type": "searchset",
+                    "total": 2,
+                    "entry": [{"resource": {"resourceType": "Patient", "id": "1"}}],
+                    "link": [
+                        {
+                            "relation": "next",
+                            "url": "http://hapi/fhir/Patient?_getpages=page-2",
+                        }
+                    ],
+                },
+            ),
+            response(
+                200,
+                {
+                    "resourceType": "Bundle",
+                    "type": "searchset",
+                    "entry": [{"resource": {"resourceType": "Patient", "id": "2"}}],
+                },
+            ),
+        ]
+    )
+    client = FHIRClient(base_url="http://hapi/fhir", page_size=50, session=session)
+
+    bundle = client.search_patients(family="Test")
+
+    assert [entry["resource"]["id"] for entry in bundle["entry"]] == ["1", "2"]
+    assert bundle["total"] == 2
+    assert "link" not in bundle
+    assert session.calls[0][2]["params"] == {"family": "Test", "_count": "50"}
+    assert session.calls[1][1] == "http://hapi/fhir/Patient?_getpages=page-2"
+
+
+def test_search_rejects_cross_origin_next_link() -> None:
+    client = FHIRClient(
+        base_url="http://hapi/fhir",
+        session=FakeSession(
+            [
+                response(
+                    200,
+                    {
+                        "resourceType": "Bundle",
+                        "link": [
+                            {
+                                "relation": "next",
+                                "url": "http://attacker.invalid/fhir/Patient?page=2",
+                            }
+                        ],
+                    },
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(FhirBadGatewayError, match="unsicheren Pagination-Link"):
+        client.search_patients()
+
+
+def test_search_fails_instead_of_returning_partial_results_at_page_limit() -> None:
+    client = FHIRClient(
+        base_url="http://hapi/fhir",
+        max_pages=1,
+        session=FakeSession(
+            [
+                response(
+                    200,
+                    {
+                        "resourceType": "Bundle",
+                        "entry": [{"resource": {"resourceType": "Patient", "id": "1"}}],
+                        "link": [
+                            {
+                                "relation": "next",
+                                "url": "http://hapi/fhir/Patient?page=2",
+                            }
+                        ],
+                    },
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(FhirBadGatewayError, match="Seitengrenze"):
+        client.search_patients()
+
+
+def test_query_only_next_link_is_resolved_against_current_search_url() -> None:
+    session = FakeSession(
+        [
+            response(
+                200,
+                {
+                    "resourceType": "Bundle",
+                    "link": [{"relation": "next", "url": "?page=2"}],
+                },
+            ),
+            response(200, {"resourceType": "Bundle"}),
+        ]
+    )
+    client = FHIRClient(base_url="http://hapi/fhir", session=session)
+
+    client.search_patients()
+
+    assert session.calls[1][1] == "http://hapi/fhir/Patient?page=2"

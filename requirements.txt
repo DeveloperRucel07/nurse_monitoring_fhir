@@ -62,6 +62,7 @@ python-multipart==0.0.32
 pytokens==0.4.1
 referencing==0.37.0
 requests==2.34.2
+redis==8.1.0
 rpds-py==2026.6.3
 rsa==4.9.1
 scikit-learn==1.9.0

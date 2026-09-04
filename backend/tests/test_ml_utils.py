@@ -1,8 +1,14 @@
 from datetime import date
 
+import pytest
+
+from backend.app.core.exceptions import FhirTimeoutError
 from backend.app.fhir_ml.ml.ml_utils import (
+    LoadedRiskModel,
+    SYNTHETIC_LABEL_DEFINITION,
     extract_features_from_fhir,
     extract_risk_labels_from_fhir,
+    get_features_for_patient,
     predict_all_risks,
     validate_features,
 )
@@ -13,6 +19,19 @@ def observation(code: str, value: float) -> dict:
         "code": {"coding": [{"code": code}]},
         "valueQuantity": {"value": value},
     }
+
+
+def dated_observation(code: str, value: float, observed_at: str, **extra) -> dict:
+    resource = observation(code, value)
+    resource.update(
+        {
+            "id": extra.pop("id", f"observation-{value}"),
+            "status": extra.pop("status", "final"),
+            "effectiveDateTime": observed_at,
+            **extra,
+        }
+    )
+    return resource
 
 
 def complete_observations() -> list[dict]:
@@ -45,8 +64,8 @@ def test_extract_features_from_complete_fhir_observations() -> None:
 
     features = extract_features_from_fhir(patient, complete_observations())
 
-    expected_age = date.today().year - 1990 - (
-        (date.today().month, date.today().day) < (5, 15)
+    expected_age = (
+        date.today().year - 1990 - ((date.today().month, date.today().day) < (5, 15))
     )
     assert features == {
         "age": expected_age,
@@ -105,8 +124,96 @@ def test_extract_risk_labels_from_fhir() -> None:
 
 
 def test_predict_all_risks_returns_incomplete_data_without_models() -> None:
-    result = predict_all_risks({"fall": object()}, {"age": 40})
+    artifact = LoadedRiskModel(
+        model=object(),
+        risk_type="fall",
+        feature_columns=(
+            "age",
+            "gender",
+            "heart_rate",
+            "systolic",
+            "diastolic",
+            "temperature",
+            "respiratory_rate",
+            "oxygen_saturation",
+            "pain_score",
+            "mobility_score",
+            "morse_score",
+        ),
+        label_definition=SYNTHETIC_LABEL_DEFINITION,
+        training_rows=105,
+    )
+    result = predict_all_risks({"fall": artifact}, {"age": 40})
 
     assert result["fall"]["status"] == "incomplete_data"
     assert result["fall"]["probability"] is None
     assert "gender" in result["fall"]["missing_features"]
+
+
+def test_feature_selection_uses_latest_measurement_independent_of_input_order() -> None:
+    patient = {"birthDate": "1990-05-15", "gender": "female"}
+    observations = [
+        dated_observation("8867-4", 60, "2026-01-01T08:00:00Z"),
+        dated_observation("8867-4", 82, "2026-01-02T08:00:00Z"),
+    ]
+
+    forward = extract_features_from_fhir(patient, observations)
+    reverse = extract_features_from_fhir(patient, list(reversed(observations)))
+
+    assert forward == reverse
+    assert forward["heart_rate"] == 82.0
+
+
+def test_feature_selection_skips_entered_in_error_and_invalid_latest_value() -> None:
+    patient = {"birthDate": "1990", "gender": "male"}
+    observations = [
+        dated_observation("8310-5", 36.5, "2026-01-01T08:00:00Z"),
+        dated_observation("8310-5", float("nan"), "2026-01-02T08:00:00Z"),
+        dated_observation(
+            "8310-5",
+            42,
+            "2026-01-03T08:00:00Z",
+            status="entered-in-error",
+        ),
+    ]
+
+    features = extract_features_from_fhir(patient, observations)
+
+    assert features["temperature"] == 36.5
+
+
+def test_risk_label_selection_uses_latest_valid_label() -> None:
+    observations = [
+        {
+            "id": "older",
+            "status": "final",
+            "effectiveDateTime": "2026-01-01T08:00:00Z",
+            "code": {"coding": [{"code": "nursing-risk-fall"}]},
+            "valueCodeableConcept": {"coding": [{"code": "negative"}]},
+        },
+        {
+            "id": "newer",
+            "status": "final",
+            "effectiveDateTime": "2026-01-02T08:00:00Z",
+            "code": {"coding": [{"code": "nursing-risk-fall"}]},
+            "valueCodeableConcept": {"coding": [{"code": "positive"}]},
+        },
+    ]
+
+    forward = extract_risk_labels_from_fhir(observations)
+    reverse = extract_risk_labels_from_fhir(list(reversed(observations)))
+
+    assert forward == reverse
+    assert forward["fall"] == 1
+
+
+def test_feature_loading_preserves_fhir_error_semantics() -> None:
+    class FailingClient:
+        def get_patient(self, _patient_id):
+            return {"resourceType": "Patient", "id": "123"}
+
+        def search_observations(self, **_kwargs):
+            raise FhirTimeoutError("FHIR timeout")
+
+    with pytest.raises(FhirTimeoutError):
+        get_features_for_patient("123", FailingClient(), allow_incomplete=True)

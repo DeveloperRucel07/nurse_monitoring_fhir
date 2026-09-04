@@ -8,7 +8,7 @@ Deutsch | [English](#english)
 
 Pflege Monitoring FHIR ist eine containerisierte Demo-Anwendung für die pflegerische Verlaufsdokumentation. Das System verbindet ein Streamlit-Dashboard, eine FastAPI-Anwendung, einen HAPI-FHIR-Server und PostgreSQL. Klinische Daten werden als FHIR-Ressourcen gespeichert; das Frontend speichert keine Patientendaten lokal.
 
-> Hinweis: Die Anwendung verwendet synthetische Demonstrationsdaten und ML-Modelle. Sie ist kein Medizinprodukt und ersetzt weder eine professionelle pflegerische Einschätzung noch klinische Entscheidungen.
+> Hinweis: Die experimentelle ML-Funktion ist standardmäßig deaktiviert. Ihre Modelle wurden ausschließlich mit synthetischen Daten trainiert, sind nicht klinisch validiert und dürfen nicht für Diagnose, Triage, Pflegeplanung oder Behandlung eingesetzt werden.
 
 ### Funktionen
 
@@ -20,9 +20,9 @@ Pflege Monitoring FHIR ist eine containerisierte Demo-Anwendung für die pfleger
 	- Schmerz-, Mobilitäts- und Morse-Sturzscore
 - Patientenbezogene Verlaufskurven für alle numerischen Messwerte
 - Pflegeakte mit Diagnosen, Medikamenten, Allergien, Pflegeberichten und Pflegeplänen
-- Risikoeinschätzung für Sturz, Dekubitus, Schmerzeskalation und klinische Verschlechterung
+- Optional aktivierbare, nicht-klinische ML-Simulation für synthetische Demo-Ziele
 - Fachlich lesbare Observationsdetails sowie Statuskorrektur und Löschung von Observationen
-- Vollständiger Patientenbericht mit Stammdaten, Pflegeakte, letzten Messwerten und Risikoeinschätzungen
+- Patientenbericht mit Stammdaten, Pflegeakte und letzten Messwerten; Demo-Modellwerte sind deutlich als nicht klinisch verwendbar gekennzeichnet
 
 ### Architektur
 
@@ -43,7 +43,7 @@ flowchart LR
 | Backend | FastAPI / Uvicorn | Validierte API und FHIR-Proxy |
 | FHIR-Server | HAPI FHIR | Speicherung der klinischen Ressourcen |
 | Datenbank | PostgreSQL 16 | Persistenz für HAPI FHIR |
-| ML | scikit-learn / joblib | Synthetische Pflege-Risikoeinschätzungen |
+| ML | scikit-learn / joblib | Standardmäßig deaktivierte, synthetische Modellsimulation |
 
 ### Zugriffsschutz
 
@@ -109,9 +109,13 @@ docker compose down -v
 | Allergien | `AllergyIntolerance` |
 | Pflegebericht | `ClinicalImpression` |
 | Pflegeplanung und Maßnahmen | `CarePlan` |
-| Risikoeinschätzung im Backend | `RiskAssessment`-kompatible Antwort |
+| Experimentelle ML-Simulation | vorläufige `RiskAssessment`-Antwort mit Demo-Kennzeichnung |
 
-### Risikoeinschätzung
+### Experimentelle ML-Simulation
+
+Der Modus `ML_MODE=synthetic-demo` muss bewusst aktiviert werden. `disabled` ist der sichere Standardwert. Es gibt derzeit keinen klinischen Betriebsmodus.
+
+Die enthaltenen Artefakte basieren auf jeweils 105 synthetischen Trainingsfällen. Ihre Prozentwerte sind keine validierten Erkrankungs- oder Ereigniswahrscheinlichkeiten. Das Backend lädt nur Artefakte, deren Risikotyp, Feature-Liste und synthetische Label-Herkunft mit dem erwarteten Demo-Vertrag übereinstimmen. Die API kennzeichnet Ergebnisse als `preliminary`, `demonstration-only`, `not-clinically-validated` und `synthetic`.
 
 Für eine vollständige Modellberechnung müssen folgende Merkmale vorhanden sein:
 
@@ -125,7 +129,7 @@ Für eine vollständige Modellberechnung müssen folgende Merkmale vorhanden sei
 - Mobilitätsscore
 - Morse-Sturzscore
 
-Fehlen Werte, zeigt die Anwendung transparent an, dass die Daten unvollständig sind. Dies verhindert, dass aus einer unvollständigen Datengrundlage eine scheinbar verlässliche Wahrscheinlichkeit abgeleitet wird.
+Fehlen Werte, zeigt die Anwendung transparent an, dass die Daten unvollständig sind. Auch bei vollständigen Daten bleibt die Ausgabe ausschließlich eine technische Demonstration.
 
 ### API-Übersicht
 
@@ -139,7 +143,7 @@ Die interaktive und vollständige API-Beschreibung steht nach dem Start unter ht
 | `POST`, `GET` | `/Observation` | Observation anlegen, suchen |
 | `GET`, `PATCH`, `DELETE` | `/Observation/{observation_id}` | Observation lesen, Status ändern, löschen |
 | `POST`, `GET` | `/Patient/{patient_id}/clinical-records/{record_type}` | Pflegeakte speichern und lesen |
-| `GET` | `/Patient/{patient_id}/nursing-risk-assessment` | Risikoeinschätzung abrufen |
+| `GET` | `/Patient/{patient_id}/nursing-risk-assessment` | Nicht-klinische synthetische Modellsimulation abrufen |
 
 Erlaubte Werte für `record_type` sind `Condition`, `MedicationStatement`, `AllergyIntolerance`, `ClinicalImpression` und `CarePlan`.
 
@@ -166,6 +170,10 @@ pip install -r requirements.txt
 | `FHIR_READ_TIMEOUT` | `15` | Lese-Timeout zum FHIR-Server in Sekunden |
 | `FHIR_RETRY_TOTAL` | `2` | Wiederholungen ausschließlich für idempotente FHIR-Lesezugriffe |
 | `FHIR_MAX_RESPONSE_BYTES` | `10485760` | Maximale Größe einer FHIR-Antwort |
+| `FHIR_PAGE_SIZE` | `200` | Angeforderte Seitengröße für FHIR-Suchen |
+| `FHIR_MAX_PAGES` | `100` | Sicherheitsgrenze für Seiten pro FHIR-Suche |
+| `FHIR_MAX_SEARCH_RESOURCES` | `10000` | Sicherheitsgrenze für Ressourcen pro FHIR-Suche |
+| `ML_MODE` | `disabled` | Erlaubt nur `disabled` oder den expliziten Demo-Modus `synthetic-demo` |
 | `BACKEND_API_URL` | `http://localhost:8000` | Backend-Basisadresse im Frontend |
 | `KEYCLOAK_ISSUER` | lokaler Realm | Erwarteter Token-Issuer |
 | `KEYCLOAK_API_AUDIENCE` | `monitoring-pflege-api` | Erforderliche Token-Audience und Rollen-Client |
@@ -208,7 +216,7 @@ docker compose build backend frontend
 
 Pflege Monitoring FHIR is a containerized demonstration application for nursing documentation and patient trends. It combines a Streamlit dashboard, a FastAPI application, a HAPI FHIR server, and PostgreSQL. Clinical data is stored as FHIR resources; the frontend does not persist patient data locally.
 
-> Notice: The application uses synthetic demonstration data and ML models. It is not a medical device and does not replace professional nursing assessment or clinical decision-making.
+> Notice: The experimental ML feature is disabled by default. Its models were trained exclusively on synthetic data, are not clinically validated, and must not be used for diagnosis, triage, care planning, or treatment.
 
 ### Features
 
@@ -220,9 +228,9 @@ Pflege Monitoring FHIR is a containerized demonstration application for nursing 
 	- Pain, mobility, and Morse fall scores
 - Patient-specific trend charts for all numeric observations
 - Nursing record for diagnoses, medications, allergies, nursing reports, and care plans
-- Risk assessment for falls, pressure ulcers, pain escalation, and clinical deterioration
+- Optional non-clinical ML simulation for synthetic demonstration targets
 - Clinician-friendly observation details, status correction, and observation deletion
-- A consolidated patient report with demographics, clinical record, recent observations, and risk assessments
+- A patient report with demographics, clinical record, and recent observations; demo model values are explicitly marked as unsuitable for clinical use
 
 ### Architecture
 
@@ -243,7 +251,7 @@ flowchart LR
 | Backend | FastAPI / Uvicorn | Validated API and FHIR proxy |
 | FHIR server | HAPI FHIR | Storage for clinical resources |
 | Database | PostgreSQL 16 | Persistence layer for HAPI FHIR |
-| ML | scikit-learn / joblib | Synthetic nursing risk assessments |
+| ML | scikit-learn / joblib | Disabled-by-default synthetic model simulation |
 
 ### Access Control
 
@@ -308,9 +316,13 @@ docker compose down -v
 | Allergies | `AllergyIntolerance` |
 | Nursing report | `ClinicalImpression` |
 | Care planning and interventions | `CarePlan` |
-| Backend risk assessment | `RiskAssessment`-compatible response |
+| Experimental ML simulation | Preliminary `RiskAssessment` response with demo markers |
 
-### Risk Assessment
+### Experimental ML Simulation
+
+The mode must be deliberately enabled with `ML_MODE=synthetic-demo`; `disabled` is the safe default. There is currently no clinical operating mode.
+
+Each bundled artifact is based on 105 synthetic training cases. Its percentages are not validated disease or event probabilities. The backend only loads artifacts whose risk type, feature list, and synthetic label provenance match the expected demo contract. API results are marked `preliminary`, `demonstration-only`, `not-clinically-validated`, and `synthetic`.
 
 A complete model calculation requires these data points:
 
@@ -324,7 +336,7 @@ A complete model calculation requires these data points:
 - Mobility score
 - Morse fall score
 
-When values are absent, the dashboard explicitly reports incomplete data. This avoids presenting a seemingly reliable probability based on insufficient clinical information.
+When values are absent, the dashboard explicitly reports incomplete data. Even with complete input data, the output remains a technical demonstration only.
 
 ### API Summary
 
@@ -338,7 +350,7 @@ After startup, the interactive and complete API documentation is available at ht
 | `POST`, `GET` | `/Observation` | Create or search observations |
 | `GET`, `PATCH`, `DELETE` | `/Observation/{observation_id}` | Read, update status, or delete an observation |
 | `POST`, `GET` | `/Patient/{patient_id}/clinical-records/{record_type}` | Create or list nursing-record entries |
-| `GET` | `/Patient/{patient_id}/nursing-risk-assessment` | Retrieve a risk assessment |
+| `GET` | `/Patient/{patient_id}/nursing-risk-assessment` | Retrieve a non-clinical synthetic model simulation |
 
 Allowed `record_type` values are `Condition`, `MedicationStatement`, `AllergyIntolerance`, `ClinicalImpression`, and `CarePlan`.
 
@@ -365,6 +377,10 @@ pip install -r requirements.txt
 | `FHIR_READ_TIMEOUT` | `15` | FHIR read timeout in seconds |
 | `FHIR_RETRY_TOTAL` | `2` | Retries for idempotent FHIR reads only |
 | `FHIR_MAX_RESPONSE_BYTES` | `10485760` | Maximum FHIR response size |
+| `FHIR_PAGE_SIZE` | `200` | Requested page size for FHIR searches |
+| `FHIR_MAX_PAGES` | `100` | Safety limit for pages per FHIR search |
+| `FHIR_MAX_SEARCH_RESOURCES` | `10000` | Safety limit for resources per FHIR search |
+| `ML_MODE` | `disabled` | Allows only `disabled` or the explicit `synthetic-demo` mode |
 | `BACKEND_API_URL` | `http://localhost:8000` | Backend base URL used by the frontend |
 | `KEYCLOAK_ISSUER` | local realm | Expected token issuer |
 | `KEYCLOAK_API_AUDIENCE` | `monitoring-pflege-api` | Required token audience and role client |

@@ -7,3 +7,8 @@ __pycache__/
 audit.log
 frontend/.streamlit/secrets*.toml
 !frontend/.streamlit/secrets.toml.example
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

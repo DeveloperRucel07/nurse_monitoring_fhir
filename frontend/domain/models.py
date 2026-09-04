@@ -33,10 +33,10 @@ class RiskResult:
 
 
 RISK_LABELS: dict[str, str] = {
-    "fall": "Sturzrisiko",
-    "clinical_deterioration": "Klinische Verschlechterung",
-    "pain_escalation": "Schmerzeskalation",
-    "pressure_ulcer": "Dekubitusrisiko",
+    "fall": "Demo-Ziel: Sturzereignis",
+    "clinical_deterioration": "Demo-Ziel: klinische Verschlechterung",
+    "pain_escalation": "Demo-Ziel: Schmerzzunahme",
+    "pressure_ulcer": "Demo-Ziel: Dekubitus",
 }
 
 
@@ -62,7 +62,9 @@ def parse_observation(resource: dict[str, Any]) -> Observation:
         for component in resource["component"]:
             component_code = ((component.get("code") or {}).get("coding") or [{}])[0]
             component_value = component.get("valueQuantity") or {}
-            parts.append(f"{component_code.get('display', 'Wert')}: {component_value.get('value', 'n. a.')} {component_value.get('unit', '')}".strip())
+            parts.append(
+                f"{component_code.get('display', 'Wert')}: {component_value.get('value', 'n. a.')} {component_value.get('unit', '')}".strip()
+            )
         value_text = " | ".join(parts)
     else:
         value_text = f"{value} {unit}".strip() if value is not None else "Kein Wert"

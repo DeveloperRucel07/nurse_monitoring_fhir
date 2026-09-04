@@ -46,7 +46,7 @@ fi
   -r "$REALM" \
   -s "secret=$OIDC_CLIENT_SECRET" \
   -s "redirectUris=[\"$OIDC_REDIRECT_URI\"]" \
-  -s 'webOrigins=["+"]' >/dev/null
+  -s "webOrigins=[\"$APP_ORIGIN\"]" >/dev/null
 
 for role in pflege_read pflege_write pflege_delete pflege_admin; do
   if ! "$KCADM" get "clients/$api_client_id/roles/$role" -r "$REALM" >/dev/null 2>&1; then

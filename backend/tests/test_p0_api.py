@@ -82,6 +82,8 @@ def test_risk_assessment_omits_null_probability_and_is_fhir_validated(
         "pflege_read"
     )
     monkeypatch.setattr(main, "fhir", fake_fhir)
+    monkeypatch.setattr(main, "ML_MODE", "synthetic-demo")
+    monkeypatch.setattr(main, "RISK_MODELS", {"verified": object()})
     monkeypatch.setattr(
         main,
         "predict_patient_all_risks",
@@ -109,7 +111,17 @@ def test_risk_assessment_omits_null_probability_and_is_fhir_validated(
     predictions = response.json()["prediction"]
     assert predictions[0]["probabilityDecimal"] == 0.2
     assert "probabilityDecimal" not in predictions[1]
-    assert response.json()["method"]["coding"][0]["code"] == "synthetic-ml-model"
+    payload = response.json()
+    assert payload["status"] == "preliminary"
+    assert payload["method"]["coding"][0]["code"] == "synthetic-demo-ml-model"
+    assert "qualitativeRisk" not in predictions[0]
+    assert {extension["valueCode"] for extension in payload["extension"]} == {
+        "demonstration-only",
+        "not-clinically-validated",
+        "synthetic",
+    }
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-model-purpose"] == "synthetic-demo-only"
     assert fake_fhir.validated[0] == "RiskAssessment"
 
 
@@ -122,6 +134,8 @@ def test_invalid_model_probability_is_not_published(monkeypatch) -> None:
         "pflege_read"
     )
     monkeypatch.setattr(main, "fhir", ValidatingFhir())
+    monkeypatch.setattr(main, "ML_MODE", "synthetic-demo")
+    monkeypatch.setattr(main, "RISK_MODELS", {"verified": object()})
     monkeypatch.setattr(
         main,
         "predict_patient_all_risks",
@@ -140,6 +154,23 @@ def test_invalid_model_probability_is_not_published(monkeypatch) -> None:
     response = TestClient(main.app).get("/Patient/123/nursing-risk-assessment")
 
     assert response.status_code == 503
+
+
+def test_ml_endpoint_is_fail_closed_when_demo_mode_is_disabled(monkeypatch) -> None:
+    main.app.dependency_overrides[security.get_current_client] = lambda: claims(
+        "pflege_read"
+    )
+    monkeypatch.setattr(main, "ML_MODE", "disabled")
+    monkeypatch.setattr(
+        main,
+        "predict_patient_all_risks",
+        lambda **_kwargs: pytest.fail("disabled ML must not execute"),
+    )
+
+    response = TestClient(main.app).get("/Patient/123/nursing-risk-assessment")
+
+    assert response.status_code == 503
+    assert "nicht für den klinischen Einsatz" in response.json()["detail"]
 
 
 def test_seed_care_plan_uses_valid_contained_goal_references() -> None:

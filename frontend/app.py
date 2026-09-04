@@ -1,5 +1,6 @@
 from datetime import datetime
 from html import escape
+import os
 from pathlib import Path
 import sys
 
@@ -131,6 +132,7 @@ div[data-baseweb="input"], div[data-baseweb="select"] > div, textarea {
 )
 
 client = FhirApiClient(token=access_token)
+SYNTHETIC_ML_ENABLED = os.getenv("ML_MODE", "disabled") == "synthetic-demo"
 if "selected_patient" not in st.session_state:
     st.session_state.selected_patient = None
 
@@ -257,7 +259,11 @@ def report_items(bundle: dict, record_type: str) -> list[str]:
 
 def show_patient_report(patient: Patient, resources: list[dict]) -> None:
     st.subheader("Patientenbericht")
-    assessment = api_call(lambda: client.assess_risks(patient.id))
+    assessment = (
+        api_call(lambda: client.assess_risks(patient.id))
+        if SYNTHETIC_ML_ENABLED
+        else None
+    )
     diagnoses = report_items(api_call(lambda: client.list_clinical_records(patient.id, "Condition")) or {}, "Condition")
     medications = report_items(api_call(lambda: client.list_clinical_records(patient.id, "MedicationStatement")) or {}, "MedicationStatement")
     allergies = report_items(api_call(lambda: client.list_clinical_records(patient.id, "AllergyIntolerance")) or {}, "AllergyIntolerance")
@@ -281,9 +287,11 @@ def show_patient_report(patient: Patient, resources: list[dict]) -> None:
     )
     if assessment:
         lines.append("")
-        lines.append("Pflegerisiken:")
+        lines.append("Experimentelle ML-Demo – nicht klinisch verwendbar:")
         lines.extend(
-            f"- {risk.label}: {risk.probability:.0%}" if risk.probability is not None else f"- {risk.label}: Daten unvollständig"
+            f"- {risk.label}: synthetischer Modellwert {risk.probability:.0%}"
+            if risk.probability is not None
+            else f"- {risk.label}: Daten unvollständig"
             for risk in risks_from_assessment(assessment)
         )
     st.text_area("Zusammenfassung", "\n".join(lines), height=420, disabled=True)
@@ -520,7 +528,7 @@ else:
         page_header(
             "Pflege-Leitstand",
             "Guten Morgen.",
-            "Wähle links einen Patienten aus, um Beobachtungen und Pflegerisiken zu sehen.",
+            "Wähle links einen Patienten aus, um Beobachtungen und Dokumentation zu sehen.",
         )
         st.info("Noch kein Patient ausgewählt. Öffne den Bereich Patienten.")
     else:
@@ -537,12 +545,26 @@ else:
             )
             left, right = st.columns([1.1, 1.9], gap="large")
             with left:
-                st.subheader("Pflegerisiken")
-                assessment = api_call(lambda: client.assess_risks(patient.id))
-                if assessment:
-                    for risk in risks_from_assessment(assessment):
-                        risk_card(risk.label, risk.probability, risk.status, risk.missing_features)
-                    st.caption("Automatisierte Einschätzung auf Basis verfügbarer FHIR-Daten. Sie ersetzt keine professionelle Pflegeeinschätzung.")
+                st.subheader("Experimentelle Modellsimulation")
+                if not SYNTHETIC_ML_ENABLED:
+                    st.info(
+                        "Die synthetische ML-Demonstration ist deaktiviert. "
+                        "Es erfolgt keine automatisierte Risikobewertung."
+                    )
+                else:
+                    st.warning(
+                        "Nur technische Demo mit synthetischen Trainingsdaten. "
+                        "Nicht für Diagnose, Triage, Pflegeplanung oder Behandlung verwenden."
+                    )
+                    assessment = api_call(lambda: client.assess_risks(patient.id))
+                    if assessment:
+                        for risk in risks_from_assessment(assessment):
+                            risk_card(
+                                risk.label,
+                                risk.probability,
+                                risk.status,
+                                risk.missing_features,
+                            )
             with right:
                 st.subheader("Aktuelle Beobachtungen")
                 if observations:
