@@ -474,6 +474,72 @@ class FHIRClient:
         assert result is not None
         return result
 
+    def get_resource(
+        self,
+        resource_type: str,
+        resource_id: str,
+    ) -> dict[str, Any]:
+        safe_type = self._safe_resource_type(resource_type)
+        result = self._request(
+            "GET",
+            f"{safe_type}/{self._safe_id(resource_id)}",
+            expected_resource_types={safe_type},
+        )
+        assert result is not None
+        return result
+
+    def update_resource(
+        self,
+        resource_type: str,
+        resource_id: str,
+        resource_data: dict[str, Any],
+        *,
+        expected_version_id: str,
+    ) -> dict[str, Any]:
+        safe_type = self._safe_resource_type(resource_type)
+        safe_id = self._safe_id(resource_id)
+        safe_version = self._safe_id(expected_version_id)
+        self.validate_resource(safe_type, resource_data)
+        result = self._request(
+            "PUT",
+            f"{safe_type}/{safe_id}",
+            json=resource_data,
+            headers={"If-Match": f'W/"{safe_version}"'},
+            expected_resource_types={safe_type},
+        )
+        assert result is not None
+        return result
+
+    def transaction(self, bundle: dict[str, Any]) -> dict[str, Any]:
+        """Execute a small, server-constructed atomic FHIR transaction."""
+        if (
+            bundle.get("resourceType") != "Bundle"
+            or bundle.get("type") != "transaction"
+        ):
+            raise FhirRequestError("Ungültiges FHIR-Transaktions-Bundle.")
+        entries = bundle.get("entry")
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 20:
+            raise FhirRequestError("Ungültige Anzahl von Transaktionseinträgen.")
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(
+                entry.get("resource"), dict
+            ):
+                raise FhirRequestError("Ungültiger FHIR-Transaktionseintrag.")
+            resource = entry["resource"]
+            resource_type = resource.get("resourceType")
+            if not isinstance(resource_type, str):
+                raise FhirRequestError("FHIR-Ressourcentyp fehlt.")
+            self.validate_resource(resource_type, resource)
+        result = self._request(
+            "POST",
+            "",
+            json=bundle,
+            headers={"Prefer": "return=representation"},
+            expected_resource_types={"Bundle"},
+        )
+        assert result is not None
+        return result
+
     def create_patient(self, patient_data: dict[str, Any]) -> dict[str, Any]:
         return self.create_resource("Patient", patient_data)
 

@@ -2,16 +2,9 @@
 
 Status: Entscheidungen in der React-Grundlage umgesetzt.
 
-## 1. Migration statt sofortigem Austausch
+## 1. React als einziges Frontend
 
-### Optionen
-
-- A: Streamlit sofort löschen und React in-place erzeugen.
-- B: React additiv in `frontend/` aufbauen, Streamlit bis zum sicheren Cutover startfähig lassen.
-
-### Empfehlung
-
-B. Das minimiert Betriebsunterbrechungen und erlaubt Auth-, Daten- und Darstellungsparität zu prüfen. Nach bestandenem Cutover wird der alte Python-Frontendcode entfernt; Git bleibt die Historie.
+Der geprüfte Cutover ist abgeschlossen. React/Vite ist die einzige Benutzeroberfläche und Nginx liefert das Produktions-Bundle aus. Paralleler Python-UI-Code wurde entfernt; die Versionshistorie bleibt in Git nachvollziehbar.
 
 ## 2. Authentifizierung
 

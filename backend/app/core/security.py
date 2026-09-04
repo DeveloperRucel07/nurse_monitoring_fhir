@@ -35,6 +35,7 @@ JWKS_CACHE_TTL_SECONDS = int(os.getenv("KEYCLOAK_JWKS_CACHE_TTL", "300"))
 READ_ROLES = frozenset({"pflege_read", "pflege_write", "pflege_delete", "pflege_admin"})
 WRITE_ROLES = frozenset({"pflege_write", "pflege_admin"})
 DELETE_ROLES = frozenset({"pflege_delete", "pflege_admin"})
+ADMIN_ROLES = frozenset({"pflege_admin"})
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -212,3 +213,4 @@ def require_roles(allowed_roles: frozenset[str]) -> Callable[..., dict[str, Any]
 require_read_access = require_roles(READ_ROLES)
 require_write_access = require_roles(WRITE_ROLES)
 require_delete_access = require_roles(DELETE_ROLES)
+require_admin_access = require_roles(ADMIN_ROLES)

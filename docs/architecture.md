@@ -1,18 +1,18 @@
 # React-Frontend: Zielarchitektur
 
-Status: Architekturvorschlag, noch nicht implementiert.
+Status: React-Zielarchitektur implementiert; fachliche Erweiterungen erfolgen inkrementell.
 
 ## Ziel und Grenzen
 
-Das neue Frontend wird eine arbeitsorientierte, mehrseitige React-Anwendung für Pflegefachkräfte, Stationspersonal sowie Ärztinnen und Ärzte. Es greift ausschließlich über das authentifizierte Backend auf klinische Daten zu. HAPI FHIR bleibt aus dem Browser unerreichbar.
+Das Frontend ist eine arbeitsorientierte, mehrseitige React-Anwendung für Pflegefachkräfte, Stationspersonal sowie Ärztinnen und Ärzte. Es greift ausschließlich über das authentifizierte Backend auf klinische Daten zu. HAPI FHIR bleibt aus dem Browser unerreichbar.
 
 Diese Planung erfindet keine bereits verfügbaren Daten. Station, Zimmer, aggregierte Warnungen, `MedicationRequest`, `Procedure` und historische `RiskAssessment`-Ressourcen können erst dargestellt werden, nachdem passende Backend-Verträge existieren.
 
 ## Bestand
 
-- Das aktuelle Frontend ist eine Streamlit-Anwendung in Python. Es gibt noch kein Node-Projekt, keine `package.json` und keine React-Komponenten.
-- Der vorhandene Python-API-Adapter zentralisiert Zugriffe und validiert IDs, besitzt aber keine Runtime-Validierung der Antworten.
-- Die Python-Domainmodelle für Patient, Observation und Demo-Risiko sind konzeptionell wiederverwendbar, nicht technisch.
+- React 19, TypeScript im Strict Mode und Vite bilden das einzige Frontend.
+- Ein zentraler TypeScript-API-Client nutzt ausschließlich relative Same-Origin-Pfade; Zod validiert kritische Antworten zur Laufzeit.
+- FHIR-Mapper transformieren Ressourcen in eigene UI-Domainmodelle, sodass React-Komponenten keine komplexen FHIR-Pfade auswerten.
 - Das Backend authentifiziert Bearer Tokens und erzwingt die Rollen `pflege_read`, `pflege_write`, `pflege_delete` und `pflege_admin` serverseitig.
 - Das Backend gibt überwiegend rohe FHIR-Ressourcen oder Bundles zurück. Nur die experimentelle `RiskAssessment`-Antwort hat ein festes Response-Schema.
 
@@ -116,17 +116,14 @@ Das erste Sichtfeld ist eine klinische Arbeitsfläche, keine Marketing-Hero-Sect
 
 Das Design verwendet neutrale Flächen, hohe Kontraste, zurückhaltendes Petrol/Blau und semantische Statusfarben mit zusätzlichem Text und Symbol. Animationen sind minimal und respektieren `prefers-reduced-motion`.
 
-## Gestufte Migration
+## Umgesetzter Betriebsstand
 
-1. React/Vite-Grundlage additiv in `frontend/` anlegen; Streamlit bleibt zunächst startfähig.
-2. Auth-BFF und Same-Origin-Gateway bereitstellen, bevor klinische React-Seiten Daten laden.
-3. Gemeinsamen API-Client, Zod-Schemas, Fehlerunionen, Query Provider und Error Boundary implementieren.
-4. Patientenliste und Patientenkopf gegen reale Endpunkte erstellen.
-5. Observationen, Vitalwerte und Trends implementieren.
-6. Unterstützte klinische Ressourcen und Timeline ergänzen; nicht unterstützte Typen bleiben sichtbar als technische Lücke, nicht als leere klinische Aussage.
-7. Experimentelle `RiskAssessment`-Darstellung nur bei aktiviertem Demo-Modus ergänzen.
-8. Security-, Accessibility- und Code-Quality-Review durchführen.
-9. Erst nach Funktionsparität Docker auf den React-Build umstellen und Streamlit entfernen.
+1. React/Vite wird als statisches Produktions-Bundle gebaut und ausschließlich über Nginx ausgeliefert.
+2. Auth-BFF und Same-Origin-Gateway halten OAuth-Tokens vollständig außerhalb des Browsers.
+3. Zentraler API-Client, Zod-Schemas, Fehlerunionen, Query Provider und Error Boundary sind umgesetzt.
+4. Patientenliste, Patientenaufnahme, Patientendetail, Observationen, Vitalwerte, Trends und Pflegedokumentation nutzen reale Backend-Verträge.
+5. Unterstützte klinische Ressourcen werden über Mapper und eine gemeinsame Timeline dargestellt; fehlende Daten bleiben explizit nicht verfügbar.
+6. Experimentelle `RiskAssessment`-Ergebnisse bleiben auf den deaktivierten beziehungsweise klar gekennzeichneten Demo-Modus begrenzt.
 
 ## Backend-Voraussetzungen für den vollständigen Zielumfang
 
@@ -134,10 +131,10 @@ Das Design verwendet neutrale Flächen, hohe Kontraste, zurückhaltendes Petrol/
 - datensparsame Patienten-Suche ohne Namen oder Geburtsdaten in Query-Strings;
 - serverseitige Pagination statt vollständiger Bundle-Aggregation für große Listen;
 - explizite Endpunkte und validierte Schreibmodelle für `MedicationRequest` und `Procedure`;
-- fachlich definierte Abbildung von Station und Zimmer, voraussichtlich über `Encounter`/`Location` statt frei erfundener Patient-Felder;
+- fachlich definierte Abbildung von Station und Zimmer über `Location`; der aktive `Encounter` und die Fallkennung sind umgesetzt;
 - aggregierter Dashboard-Vertrag, um N+1-Anfragen und PHI-Übertragung zu vermeiden;
 - persistierte Assessment-Historie, falls Assessment-ID, Quelle und Verlauf angezeigt werden sollen;
 - RiskAssessment-Metadaten für Modellversion, verwendete Features und Datenbasis;
-- ETag/Versionsvertrag für sichere konkurrierende Änderungen.
+- ETag/Versionsverträge für weitere mutierbare Ressourcen; für Pflegeberichte ist `If-Match` bereits umgesetzt.
 
 Bis diese Verträge vorliegen, bleibt der entsprechende UI-Umfang bewusst reduziert.

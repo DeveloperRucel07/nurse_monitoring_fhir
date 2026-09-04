@@ -1,5 +1,7 @@
 import type {
   ClinicalEvent,
+  Encounter,
+  NursingReport,
   ParsedCollection,
   Patient,
   RiskAssessment,
@@ -8,8 +10,10 @@ import type {
 } from "../../entities/clinical/model";
 import {
   BundleSchema,
+  CompositionSchema,
   ClinicalResourceSchema,
   ObservationSchema,
+  EncounterSchema,
   PatientSchema,
   RiskAssessmentSchema,
   type FhirClinicalResource,
@@ -27,6 +31,7 @@ const LOINC_TO_KIND: Record<string, VitalKind> = {
   "83186-7": "mobility",
   "59460-6": "morse-score",
   "59461-4": "morse-level",
+  "59454-9": "fall-history",
 };
 
 const KIND_LABEL: Record<VitalKind, string> = {
@@ -39,6 +44,7 @@ const KIND_LABEL: Record<VitalKind, string> = {
   mobility: "Mobilität",
   "morse-score": "Morse Fall Scale",
   "morse-level": "Sturzrisikostufe",
+  "fall-history": "Sturzanamnese (Morse)",
   other: "Weitere Messung",
 };
 
@@ -127,6 +133,46 @@ export function mapObservation(input: unknown): VitalSign {
     ...(value !== undefined ? { value } : {}),
     ...(unit ? { unit } : {}),
     ...(textValue ? { textValue } : {}),
+  };
+}
+
+export function mapEncounter(input: unknown): Encounter {
+  const resource = EncounterSchema.parse(input);
+  const identifier = resource.identifier?.find((item) => item.use === "official")?.value
+    ?? resource.identifier?.find((item) => item.value)?.value;
+  const startedAt = validDate(resource.period?.start);
+  return {
+    id: resource.id,
+    status: resource.status,
+    ...(identifier ? { identifier } : {}),
+    ...(startedAt ? { startedAt } : {}),
+  };
+}
+
+function narrativeText(div?: string): string {
+  if (!div) return "Inhalt nicht verfügbar";
+  const document = new DOMParser().parseFromString(div, "application/xhtml+xml");
+  if (document.querySelector("parsererror")) return "Inhalt nicht sicher lesbar";
+  return document.documentElement.textContent?.trim() || "Inhalt nicht verfügbar";
+}
+
+export function mapNursingReport(input: unknown): NursingReport {
+  const resource = CompositionSchema.parse(input);
+  const versionId = resource.meta?.versionId;
+  if (!versionId) throw new Error("FHIR-Version fehlt");
+  const encounterReference = resource.encounter?.reference;
+  const encounterId = encounterReference?.match(/^Encounter\/([A-Za-z0-9.-]{1,64})$/)?.[1];
+  const authoredAt = validDate(resource.date);
+  return {
+    id: resource.id,
+    versionId,
+    status: resource.status,
+    title: resource.title,
+    text: narrativeText(resource.section?.[0]?.text?.div),
+    ...(resource.identifier?.value ? { identifier: resource.identifier.value } : {}),
+    ...(authoredAt ? { authoredAt } : {}),
+    ...(resource.author?.[0]?.display ? { author: resource.author[0].display } : {}),
+    ...(encounterId ? { encounterId } : {}),
   };
 }
 

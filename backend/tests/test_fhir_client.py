@@ -240,3 +240,63 @@ def test_query_only_next_link_is_resolved_against_current_search_url() -> None:
     client.search_patients()
 
     assert session.calls[1][1] == "http://hapi/fhir/Patient?page=2"
+
+
+def test_update_resource_uses_weak_etag_for_optimistic_concurrency() -> None:
+    session = FakeSession(
+        [
+            response(200, {"resourceType": "OperationOutcome", "issue": []}),
+            response(
+                200,
+                {
+                    "resourceType": "Composition",
+                    "id": "report-1",
+                    "meta": {"versionId": "2"},
+                },
+            ),
+        ]
+    )
+    client = FHIRClient(base_url="http://hapi/fhir", session=session)
+
+    client.update_resource(
+        "Composition",
+        "report-1",
+        {"resourceType": "Composition", "id": "report-1"},
+        expected_version_id="1",
+    )
+
+    assert session.calls[1][2]["headers"]["If-Match"] == 'W/"1"'
+
+
+def test_transaction_validates_each_resource_before_atomic_post() -> None:
+    session = FakeSession(
+        [
+            response(200, {"resourceType": "OperationOutcome", "issue": []}),
+            response(200, {"resourceType": "OperationOutcome", "issue": []}),
+            response(200, {"resourceType": "Bundle", "type": "transaction-response"}),
+        ]
+    )
+    client = FHIRClient(base_url="http://hapi/fhir", session=session)
+    bundle = {
+        "resourceType": "Bundle",
+        "type": "transaction",
+        "entry": [
+            {
+                "resource": {"resourceType": "Patient"},
+                "request": {"method": "POST", "url": "Patient"},
+            },
+            {
+                "resource": {"resourceType": "Encounter"},
+                "request": {"method": "POST", "url": "Encounter"},
+            },
+        ],
+    }
+
+    client.transaction(bundle)
+
+    assert [call[1] for call in session.calls] == [
+        "http://hapi/fhir/Patient/$validate",
+        "http://hapi/fhir/Encounter/$validate",
+        "http://hapi/fhir/",
+    ]
+    assert session.calls[2][2]["headers"]["Prefer"] == "return=representation"

@@ -49,6 +49,9 @@ services:
       FHIR_PAGE_SIZE: ${FHIR_PAGE_SIZE:-200}
       FHIR_MAX_PAGES: ${FHIR_MAX_PAGES:-100}
       FHIR_MAX_SEARCH_RESOURCES: ${FHIR_MAX_SEARCH_RESOURCES:-10000}
+      PATIENT_IDENTIFIER_SYSTEM: ${PATIENT_IDENTIFIER_SYSTEM:-https://monitoring-pflege.local/identifier/patient}
+      ENCOUNTER_IDENTIFIER_SYSTEM: ${ENCOUNTER_IDENTIFIER_SYSTEM:-https://monitoring-pflege.local/identifier/encounter}
+      NURSING_REPORT_IDENTIFIER_SYSTEM: ${NURSING_REPORT_IDENTIFIER_SYSTEM:-https://monitoring-pflege.local/identifier/nursing-report}
       ML_MODE: ${ML_MODE:-disabled}
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/health-interop/protocol/openid-connect/certs
       KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8081}/realms/health-interop

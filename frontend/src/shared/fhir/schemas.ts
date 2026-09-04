@@ -21,7 +21,7 @@ export const PatientSchema = z.looseObject({
   resourceType: z.literal("Patient"),
   id: z.string().min(1).max(64),
   identifier: z
-    .array(z.looseObject({ value: z.string().optional(), use: z.string().optional() }))
+    .array(z.looseObject({ system: z.string().optional(), value: z.string().optional(), use: z.string().optional() }))
     .optional(),
   name: z
     .array(
@@ -58,6 +58,41 @@ export const ObservationSchema = z.looseObject({
       }),
     )
     .optional(),
+});
+
+const ReferenceSchema = z.looseObject({
+  reference: z.string().optional(),
+  display: z.string().optional(),
+  identifier: z.looseObject({ system: z.string().optional(), value: z.string().optional() }).optional(),
+});
+
+export const EncounterSchema = z.looseObject({
+  resourceType: z.literal("Encounter"),
+  id: z.string().min(1).max(64),
+  identifier: z.array(z.looseObject({ system: z.string().optional(), value: z.string().optional(), use: z.string().optional() })).optional(),
+  status: z.string(),
+  subject: ReferenceSchema.optional(),
+  period: z.looseObject({ start: z.string().optional(), end: z.string().optional() }).optional(),
+});
+
+export const CompositionSchema = z.looseObject({
+  resourceType: z.literal("Composition"),
+  id: z.string().min(1).max(64),
+  meta: z.looseObject({ versionId: z.string().min(1).max(64).optional() }).optional(),
+  identifier: z.looseObject({ system: z.string().optional(), value: z.string().optional() }).optional(),
+  status: z.enum(["preliminary", "final", "amended", "entered-in-error"]),
+  title: z.string().max(200),
+  date: z.string().optional(),
+  author: z.array(ReferenceSchema).optional(),
+  encounter: ReferenceSchema.optional(),
+  section: z.array(z.looseObject({
+    text: z.looseObject({ status: z.string().optional(), div: z.string().max(10000).optional() }).optional(),
+  })).optional(),
+});
+
+export const AdmissionResponseSchema = z.object({
+  patient: PatientSchema,
+  encounter: EncounterSchema,
 });
 
 export const ClinicalResourceSchema = z.looseObject({
@@ -135,6 +170,8 @@ export const SessionSchema = z.object({
 
 export type FhirPatient = z.infer<typeof PatientSchema>;
 export type FhirObservation = z.infer<typeof ObservationSchema>;
+export type FhirEncounter = z.infer<typeof EncounterSchema>;
+export type FhirComposition = z.infer<typeof CompositionSchema>;
 export type FhirClinicalResource = z.infer<typeof ClinicalResourceSchema>;
 export type FhirRiskAssessment = z.infer<typeof RiskAssessmentSchema>;
 export type Session = z.infer<typeof SessionSchema>;

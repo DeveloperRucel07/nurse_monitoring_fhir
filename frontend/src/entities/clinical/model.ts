@@ -7,6 +7,25 @@ export type Patient = {
   identifier?: string;
 };
 
+export type Encounter = {
+  id: string;
+  identifier?: string;
+  status: string;
+  startedAt?: string;
+};
+
+export type NursingReport = {
+  id: string;
+  identifier?: string;
+  versionId: string;
+  status: "preliminary" | "final" | "amended" | "entered-in-error";
+  title: string;
+  text: string;
+  authoredAt?: string;
+  author?: string;
+  encounterId?: string;
+};
+
 export type VitalKind =
   | "heart-rate"
   | "blood-pressure"
@@ -17,6 +36,7 @@ export type VitalKind =
   | "mobility"
   | "morse-score"
   | "morse-level"
+  | "fall-history"
   | "other";
 
 export type VitalSign = {

@@ -150,6 +150,8 @@ VitalMeasurementType = Literal[
     "oxygen-saturation",
     "pain",
     "morse-score",
+    "mobility",
+    "fall-history",
 ]
 
 
@@ -159,10 +161,14 @@ class VitalMeasurementCreate(PatientContextRequest):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     measurementType: VitalMeasurementType
+    encounterId: str = Field(pattern=r"^[A-Za-z0-9.-]{1,64}$")
     measuredAt: datetime
     value: Optional[float] = None
     systolic: Optional[float] = None
     diastolic: Optional[float] = None
+    codedValue: Optional[
+        Literal["independent", "needs-help", "dependent", "yes", "no"]
+    ] = None
 
     @model_validator(mode="after")
     def validate_measurement(self) -> "VitalMeasurementCreate":
@@ -174,6 +180,7 @@ class VitalMeasurementCreate(PatientContextRequest):
                 self.value is not None
                 or self.systolic is None
                 or self.diastolic is None
+                or self.codedValue is not None
             ):
                 raise ValueError(
                     "Blutdruck benötigt systolischen und diastolischen Wert"
@@ -182,10 +189,25 @@ class VitalMeasurementCreate(PatientContextRequest):
                 raise ValueError("Blutdruck liegt außerhalb der Erfassungsgrenzen")
             return self
 
+        if self.measurementType in {"mobility", "fall-history"}:
+            allowed = {
+                "mobility": {"independent", "needs-help", "dependent"},
+                "fall-history": {"yes", "no"},
+            }
+            if (
+                self.codedValue not in allowed[self.measurementType]
+                or self.value is not None
+                or self.systolic is not None
+                or self.diastolic is not None
+            ):
+                raise ValueError("Strukturierte Einschätzung hat einen ungültigen Wert")
+            return self
+
         if (
             self.value is None
             or self.systolic is not None
             or self.diastolic is not None
+            or self.codedValue is not None
         ):
             raise ValueError("Messung benötigt genau einen numerischen Wert")
 
@@ -203,13 +225,27 @@ class VitalMeasurementCreate(PatientContextRequest):
         return self
 
 
+class PatientAdmissionCreate(PatientCreate):
+    """Patient and inpatient encounter created together."""
+
+    admittedAt: datetime
+
+    @field_validator("admittedAt")
+    @classmethod
+    def admission_time_must_have_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Aufnahmezeitpunkt muss eine Zeitzone enthalten")
+        return value
+
+
 class NursingReportCreate(PatientContextRequest):
-    """Plain-text nursing report stored as a FHIR ClinicalImpression."""
+    """Plain-text nursing report stored as a FHIR Composition."""
 
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=4000)
+    encounterId: str = Field(pattern=r"^[A-Za-z0-9.-]{1,64}$")
 
     @field_validator("title", "text")
     @classmethod
@@ -217,6 +253,39 @@ class NursingReportCreate(PatientContextRequest):
         value = value.strip()
         if not value:
             raise ValueError("Text darf nicht leer sein")
+        return value
+
+
+class NursingReportCorrection(PatientContextRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    reportId: str = Field(pattern=r"^[A-Za-z0-9.-]{1,64}$")
+    expectedVersionId: str = Field(pattern=r"^[A-Za-z0-9.-]{1,64}$")
+    title: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("title", "text")
+    @classmethod
+    def correction_text_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Text darf nicht leer sein")
+        return value
+
+
+class NursingReportErrorMark(PatientContextRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    reportId: str = Field(pattern=r"^[A-Za-z0-9.-]{1,64}$")
+    expectedVersionId: str = Field(pattern=r"^[A-Za-z0-9.-]{1,64}$")
+    reason: str = Field(min_length=3, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 3:
+            raise ValueError("Korrekturgrund ist zu kurz")
         return value
 
 

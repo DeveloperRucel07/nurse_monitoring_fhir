@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  correctNursingReport,
   createNursingReport,
-  createPatient,
+  admitPatient,
   createVitalMeasurement,
 } from "../src/shared/api/clinicalApi";
 import { setCsrfToken } from "../src/shared/api/http";
@@ -26,20 +27,22 @@ function requestJson(init: RequestInit): unknown {
 describe("klinische Schreiboperationen", () => {
   it("übermittelt Patientenstammdaten im Body und keine erfundene Kennung", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-      resourceType: "Patient",
-      id: "patient-1",
-      name: [{ family: "Beispiel", given: ["Eva"] }],
+      patient: { resourceType: "Patient", id: "patient-1", identifier: [{ use: "official", value: "PAT-1" }], name: [{ family: "Beispiel", given: ["Eva"] }] },
+      encounter: { resourceType: "Encounter", id: "encounter-1", identifier: [{ use: "official", value: "FALL-1" }], status: "in-progress" },
     }));
     vi.stubGlobal("fetch", fetchMock);
     setCsrfToken("csrf-test-value");
 
-    const patient = await createPatient({ family: "Beispiel", given: "Eva" });
+    const { patient, encounter } = await admitPatient({ family: "Beispiel", given: "Eva", admittedAt: "2026-09-04T08:00:00Z" });
 
     expect(patient.id).toBe("patient-1");
-    expect(fetchMock).toHaveBeenCalledWith("/api/Patient", expect.anything());
+    expect(patient.identifier).toBe("PAT-1");
+    expect(encounter.identifier).toBe("FALL-1");
+    expect(fetchMock).toHaveBeenCalledWith("/api/ui/patients/admit", expect.anything());
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(requestJson(init)).toEqual({
       name: [{ family: "Beispiel", given: ["Eva"] }],
+      admittedAt: "2026-09-04T08:00:00Z",
     });
     expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("csrf-test-value");
   });
@@ -57,6 +60,7 @@ describe("klinische Schreiboperationen", () => {
 
     const result = await createVitalMeasurement("patient-1", {
       measurementType: "heart-rate",
+      encounterId: "encounter-1",
       measuredAt: "2026-09-04T08:30:00Z",
       value: 82,
     });
@@ -67,6 +71,7 @@ describe("klinische Schreiboperationen", () => {
     expect(payload).toEqual({
       patientId: "patient-1",
       measurementType: "heart-rate",
+      encounterId: "encounter-1",
       measuredAt: "2026-09-04T08:30:00Z",
       value: 82,
     });
@@ -77,21 +82,56 @@ describe("klinische Schreiboperationen", () => {
   it("behandelt Berichtsinhalte als Text und übernimmt den FHIR-Zeitpunkt", async () => {
     const attack = '<img src=x onerror="alert(1)">';
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
-      resourceType: "ClinicalImpression",
+      resourceType: "Composition",
       id: "report-1",
-      status: "completed",
-      summary: "Pflegebericht",
-      description: attack,
+      meta: { versionId: "1" },
+      identifier: { value: "BERICHT-1" },
+      status: "final",
+      title: "Pflegebericht",
       date: "2026-09-04T08:35:00Z",
+      encounter: { reference: "Encounter/encounter-1" },
+      author: [{ display: "Pflege Demo" }],
+      section: [{ text: { status: "generated", div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>&lt;img src=x onerror="alert(1)"&gt;</p></div>' } }],
     }));
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await createNursingReport("patient-1", {
+      encounterId: "encounter-1",
       title: "Pflegebericht",
       text: attack,
     });
 
-    expect(result.description).toBe(attack);
-    expect(result.occurredAt).toBe("2026-09-04T08:35:00Z");
+    expect(result.text).toBe(attack);
+    expect(result.authoredAt).toBe("2026-09-04T08:35:00Z");
+    expect(result.versionId).toBe("1");
+  });
+
+  it("sendet bei einer Korrektur die gelesene FHIR-Version", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      resourceType: "Composition",
+      id: "report-1",
+      meta: { versionId: "4" },
+      status: "amended",
+      title: "Korrigiert",
+      section: [{ text: { div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Neu</p></div>' } }],
+    }, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await correctNursingReport(
+      "patient-1",
+      { id: "report-1", versionId: "3", status: "final", title: "Alt", text: "Alt" },
+      "Korrigiert",
+      "Neu",
+    );
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.method).toBe("PUT");
+    expect(requestJson(init)).toEqual({
+      patientId: "patient-1",
+      reportId: "report-1",
+      expectedVersionId: "3",
+      title: "Korrigiert",
+      text: "Neu",
+    });
   });
 });

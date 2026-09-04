@@ -9,7 +9,7 @@ import { RiskPanel } from "../features/risk-assessment/RiskPanel";
 import { TrendChart } from "../features/observations/TrendChart";
 import { VitalMeasurementForm } from "../features/observations/VitalMeasurementForm";
 import { VitalGrid } from "../features/observations/VitalGrid";
-import { getClinicalRecords, getObservations, getPatient, getRiskAssessment, type ClinicalRecordType } from "../shared/api/clinicalApi";
+import { getClinicalRecords, getEncounters, getNursingReports, getObservations, getPatient, getRiskAssessment, type ClinicalRecordType } from "../shared/api/clinicalApi";
 import { EmptyState, ErrorState, LoadingState, PartialDataNotice, Section } from "../shared/components/States";
 import { formatDate, maskIdentifier } from "../shared/utils/format";
 
@@ -27,6 +27,8 @@ export function PatientDetailPage() {
   const { capabilities, features } = useAuth();
   const patient = useQuery({ queryKey: ["patient", selectedPatientId], queryFn: () => getPatient(selectedPatientId ?? ""), enabled: Boolean(selectedPatientId) });
   const observations = useQuery({ queryKey: ["observations", selectedPatientId], queryFn: () => getObservations(selectedPatientId ?? ""), enabled: Boolean(selectedPatientId) });
+  const encounters = useQuery({ queryKey: ["encounters", selectedPatientId], queryFn: () => getEncounters(selectedPatientId ?? ""), enabled: Boolean(selectedPatientId) });
+  const nursingReports = useQuery({ queryKey: ["nursing-reports", selectedPatientId], queryFn: () => getNursingReports(selectedPatientId ?? ""), enabled: Boolean(selectedPatientId) });
   const recordResults = useQueries({ queries: recordTypes.map((recordType) => ({ queryKey: ["clinical-records", selectedPatientId, recordType], queryFn: () => getClinicalRecords(selectedPatientId ?? "", recordType), enabled: Boolean(selectedPatientId) })) });
   const risk = useQuery({ queryKey: ["risk", selectedPatientId], queryFn: () => getRiskAssessment(selectedPatientId ?? ""), enabled: Boolean(selectedPatientId) && features.experimentalMl, retry: false });
 
@@ -34,21 +36,23 @@ export function PatientDetailPage() {
   if (patient.isPending) return <LoadingState label="Patientenakte wird geladen" />;
   if (patient.isError) return <ErrorState error={patient.error} onRetry={() => void patient.refetch()} />;
 
-  const allEvents = recordResults.flatMap((result) => result.data?.items ?? []);
-  const rejected = (observations.data?.rejectedCount ?? 0) + recordResults.reduce((sum, result) => sum + (result.data?.rejectedCount ?? 0), 0);
+  const activeEncounter = encounters.data?.items.find((item) => ["arrived", "triaged", "in-progress", "onleave"].includes(item.status));
+  const reportEvents = (nursingReports.data?.items ?? []).map((report) => ({ id: report.id, resourceType: "Composition", label: report.title, status: report.status, ...(report.authoredAt ? { occurredAt: report.authoredAt } : {}), description: report.status === "entered-in-error" ? "Nicht verwenden – als fehlerhaft markiert" : report.text }));
+  const allEvents = [...recordResults.flatMap((result) => result.data?.items ?? []), ...reportEvents];
+  const rejected = (observations.data?.rejectedCount ?? 0) + (encounters.data?.rejectedCount ?? 0) + (nursingReports.data?.rejectedCount ?? 0) + recordResults.reduce((sum, result) => sum + (result.data?.rejectedCount ?? 0), 0);
   const id = patient.data.identifier ?? patient.data.id;
   return <div className="page-stack">
     <Link className="back-link" to="/patients"><ArrowLeft />Patientenübersicht</Link>
     <section className="patient-header">
-      <div className="patient-identity"><span className="large-avatar"><CircleUserRound /></span><div><span className="eyebrow">Aktive Patientenakte</span><h1>{privacyMask ? "Name geschützt" : patient.data.displayName}</h1><div className="patient-meta"><span><IdCard />ID: {privacyMask ? maskIdentifier(id) : id}</span><span><CalendarDays />{privacyMask ? "Geburtsdatum geschützt" : `${formatDate(patient.data.birthDate)}${patient.data.age !== undefined ? ` · ${patient.data.age} Jahre` : ""}`}</span><span><MapPin />Station / Zimmer nicht verfügbar</span></div></div></div>
+      <div className="patient-identity"><span className="large-avatar"><CircleUserRound /></span><div><span className="eyebrow">Aktive Patientenakte</span><h1>{privacyMask ? "Name geschützt" : patient.data.displayName}</h1><div className="patient-meta"><span><IdCard />Patient: {privacyMask ? maskIdentifier(id) : id}</span><span><CalendarDays />{privacyMask ? "Geburtsdatum geschützt" : `${formatDate(patient.data.birthDate)}${patient.data.age !== undefined ? ` · ${patient.data.age} Jahre` : ""}`}</span><span><MapPin />Fall: {activeEncounter ? privacyMask ? maskIdentifier(activeEncounter.identifier ?? activeEncounter.id) : activeEncounter.identifier ?? activeEncounter.id : "Kein aktiver Fall"}</span></div></div></div>
       <span className="status-badge success"><ShieldCheck />FHIR-Akte geladen</span>
     </section>
     <PartialDataNotice count={rejected} />
     {capabilities.canWrite ? <Section title="Pflegedokumentation" eyebrow="Sicher erfassen">
-      <div className="content-grid clinical-actions-grid">
-        <VitalMeasurementForm patientId={selectedPatientId} />
-        <NursingReportForm patientId={selectedPatientId} />
-      </div>
+      {encounters.isPending ? <LoadingState label="Aktiver Fall wird geprüft" /> : encounters.isError ? <ErrorState error={encounters.error} onRetry={() => void encounters.refetch()} /> : activeEncounter ? <div className="content-grid clinical-actions-grid">
+        <VitalMeasurementForm patientId={selectedPatientId} encounterId={activeEncounter.id} />
+        <NursingReportForm patientId={selectedPatientId} encounterId={activeEncounter.id} />
+      </div> : <div className="notice notice-warning"><ShieldCheck aria-hidden="true" /><span>Keine Dokumentation möglich: Für diese Person wurde kein aktiver FHIR Encounter gefunden.</span></div>}
     </Section> : <div className="notice notice-info"><ShieldCheck aria-hidden="true" /><span>Diese Akte ist schreibgeschützt. Für Messwerte und Pflegeberichte ist die Rolle „pflege_write“ erforderlich.</span></div>}
     <Section title="Aktueller Status" eyebrow="Letzte verfügbare Messwerte">
       {observations.isPending ? <LoadingState label="Messwerte werden geladen" /> : observations.isError ? <ErrorState error={observations.error} onRetry={() => void observations.refetch()} /> : <VitalGrid observations={observations.data.items} />}

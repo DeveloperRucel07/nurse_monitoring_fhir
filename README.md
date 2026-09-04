@@ -6,7 +6,7 @@ Deutsch | [English](#english)
 
 ### Überblick
 
-Pflege Monitoring FHIR ist eine containerisierte Demo-Anwendung für die pflegerische Verlaufsdokumentation. Das System verbindet ein Streamlit-Dashboard, eine FastAPI-Anwendung, einen HAPI-FHIR-Server und PostgreSQL. Klinische Daten werden als FHIR-Ressourcen gespeichert; das Frontend speichert keine Patientendaten lokal.
+Pflege Monitoring FHIR ist eine containerisierte Demo-Anwendung für die pflegerische Verlaufsdokumentation. Das System verbindet ein React-/TypeScript-Frontend, eine FastAPI-Anwendung, einen HAPI-FHIR-Server und PostgreSQL. Klinische Daten werden als FHIR-Ressourcen gespeichert; das Frontend speichert keine Patientendaten lokal.
 
 > Hinweis: Die experimentelle ML-Funktion ist standardmäßig deaktiviert. Ihre Modelle wurden ausschließlich mit synthetischen Daten trainiert, sind nicht klinisch validiert und dürfen nicht für Diagnose, Triage, Pflegeplanung oder Behandlung eingesetzt werden.
 
@@ -29,9 +29,10 @@ Pflege Monitoring FHIR ist eine containerisierte Demo-Anwendung für die pfleger
 ```mermaid
 flowchart LR
 		U[Pflegefachperson] -->|OIDC Login| KC[Keycloak :8081]
-		U --> FE[Streamlit Dashboard :8501]
-		FE -->|Bearer Access-Token| BE[FastAPI Backend :8000]
-		BE -->|Signatur + Rollen prüfen| KC
+		U --> FE[React/Vite via Nginx :8501]
+		FE -->|Same-Origin /auth und /api| BE[FastAPI BFF/API :8000]
+		BE -->|Authorization Code + PKCE| KC
+		BE -->|verschlüsselte Sitzung| SS[(Redis Session Store)]
 		BE -->|FHIR REST| FHIR[HAPI FHIR :8080/fhir]
 		BE --> ML[ML Risikomodelle]
 		FHIR --> DB[(PostgreSQL)]
@@ -39,7 +40,7 @@ flowchart LR
 
 | Komponente | Technologie | Aufgabe |
 | --- | --- | --- |
-| Frontend | Streamlit | Pflege-Dashboard und Dokumentation |
+| Frontend | React / TypeScript / Vite / Nginx | Pflege-Dashboard, Dokumentation und Same-Origin-Gateway |
 | Backend | FastAPI / Uvicorn | Validierte API und FHIR-Proxy |
 | FHIR-Server | HAPI FHIR | Speicherung der klinischen Ressourcen |
 | Datenbank | PostgreSQL 16 | Persistenz für HAPI FHIR |
@@ -47,7 +48,7 @@ flowchart LR
 
 ### Zugriffsschutz
 
-- Nicht angemeldete Personen werden vom Dashboard direkt zur Keycloak-Anmeldung weitergeleitet.
+- Nicht angemeldete Personen werden von der React-Anwendung direkt zur Keycloak-Anmeldung weitergeleitet.
 - Das Backend validiert Signatur, Ablaufzeit, Issuer, Audience und autorisierten Client jedes Access-Tokens.
 - Die Client-Rollen `pflege_read`, `pflege_write`, `pflege_delete` und `pflege_admin` begrenzen Lese-, Schreib- und Löschzugriffe.
 - HAPI FHIR und beide Datenbanken sind nur in internen Docker-Netzen erreichbar. Klinische Daten sind nicht über einen eigenen Host-Port zugänglich.
@@ -174,11 +175,11 @@ pip install -r requirements.txt
 | `FHIR_MAX_PAGES` | `100` | Sicherheitsgrenze für Seiten pro FHIR-Suche |
 | `FHIR_MAX_SEARCH_RESOURCES` | `10000` | Sicherheitsgrenze für Ressourcen pro FHIR-Suche |
 | `ML_MODE` | `disabled` | Erlaubt nur `disabled` oder den expliziten Demo-Modus `synthetic-demo` |
-| `BACKEND_API_URL` | `http://localhost:8000` | Backend-Basisadresse im Frontend |
 | `KEYCLOAK_ISSUER` | lokaler Realm | Erwarteter Token-Issuer |
 | `KEYCLOAK_API_AUDIENCE` | `monitoring-pflege-api` | Erforderliche Token-Audience und Rollen-Client |
 | `OIDC_CLIENT_SECRET` | kein Standardwert | Vertrauliches Frontend-Client-Secret |
-| `OIDC_COOKIE_SECRET` | kein Standardwert | Signatur-Secret für die Streamlit-Sitzung |
+| `BFF_SESSION_ENCRYPTION_KEY` | kein Standardwert | Fernet-Schlüssel für serverseitig gespeicherte OAuth-Tokens |
+| `BFF_COOKIE_SECURE` | `false` lokal | Muss hinter TLS auf `true` gesetzt werden |
 | `DEMO_USER_PASSWORD` | kein Standardwert | Temporäres Kennwort des lokalen Demo-Benutzers |
 
 Alle erforderlichen Werte sind in [.env.example](.env.example) dokumentiert. Echte Secrets gehören ausschließlich in die ignorierte `.env`-Datei.
@@ -192,10 +193,10 @@ backend/
 		fhir_ml/                FHIR-Client und ML-Risikologik
 		models/                 Pydantic-Eingabemodelle
 frontend/
-	app.py                    Streamlit-Dashboard
-	application/              Transformationen für UI-Daten
-	domain/                   UI-Datenmodelle
-	infrastructure/           Backend-API-Client
+	src/                      React-Anwendung, Features, Domainmodelle und API-Adapter
+	tests/                    Vitest-Tests für kritische Frontendlogik
+	nginx.conf                Same-Origin-Gateway und SPA-Auslieferung
+	package.json              Node-Abhängigkeiten und Prüfskripte
 docker-compose.yml          Gesamtsystem: PostgreSQL, HAPI, Backend, Frontend
 requirements.txt            Python-Abhängigkeiten
 ```
@@ -203,7 +204,13 @@ requirements.txt            Python-Abhängigkeiten
 ### Validierung
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile frontend/app.py backend/app/main.py
+.\.venv\Scripts\python.exe -m py_compile backend/app/main.py
+Push-Location frontend
+npm.cmd ci
+npm.cmd run lint
+npm.cmd test
+npm.cmd run build
+Pop-Location
 docker compose config
 docker compose build backend frontend
 ```
@@ -214,7 +221,7 @@ docker compose build backend frontend
 
 ### Overview
 
-Pflege Monitoring FHIR is a containerized demonstration application for nursing documentation and patient trends. It combines a Streamlit dashboard, a FastAPI application, a HAPI FHIR server, and PostgreSQL. Clinical data is stored as FHIR resources; the frontend does not persist patient data locally.
+Pflege Monitoring FHIR is a containerized demonstration application for nursing documentation and patient trends. It combines a React/TypeScript frontend, a FastAPI application, a HAPI FHIR server, and PostgreSQL. Clinical data is stored as FHIR resources; the frontend does not persist patient data locally.
 
 > Notice: The experimental ML feature is disabled by default. Its models were trained exclusively on synthetic data, are not clinically validated, and must not be used for diagnosis, triage, care planning, or treatment.
 
@@ -237,9 +244,10 @@ Pflege Monitoring FHIR is a containerized demonstration application for nursing 
 ```mermaid
 flowchart LR
 		U[Nursing professional] -->|OIDC login| KC[Keycloak :8081]
-		U --> FE[Streamlit Dashboard :8501]
-		FE -->|Bearer access token| BE[FastAPI Backend :8000]
-		BE -->|Verify token + roles| KC
+		U --> FE[React/Vite via Nginx :8501]
+		FE -->|Same-origin /auth and /api| BE[FastAPI BFF/API :8000]
+		BE -->|Authorization Code + PKCE| KC
+		BE -->|Encrypted session| SS[(Redis Session Store)]
 		BE -->|FHIR REST| FHIR[HAPI FHIR :8080/fhir]
 		BE --> ML[ML risk models]
 		FHIR --> DB[(PostgreSQL)]
@@ -247,7 +255,7 @@ flowchart LR
 
 | Component | Technology | Responsibility |
 | --- | --- | --- |
-| Frontend | Streamlit | Nursing dashboard and documentation UI |
+| Frontend | React / TypeScript / Vite / Nginx | Nursing dashboard, documentation UI, and same-origin gateway |
 | Backend | FastAPI / Uvicorn | Validated API and FHIR proxy |
 | FHIR server | HAPI FHIR | Storage for clinical resources |
 | Database | PostgreSQL 16 | Persistence layer for HAPI FHIR |
@@ -381,11 +389,11 @@ pip install -r requirements.txt
 | `FHIR_MAX_PAGES` | `100` | Safety limit for pages per FHIR search |
 | `FHIR_MAX_SEARCH_RESOURCES` | `10000` | Safety limit for resources per FHIR search |
 | `ML_MODE` | `disabled` | Allows only `disabled` or the explicit `synthetic-demo` mode |
-| `BACKEND_API_URL` | `http://localhost:8000` | Backend base URL used by the frontend |
 | `KEYCLOAK_ISSUER` | local realm | Expected token issuer |
 | `KEYCLOAK_API_AUDIENCE` | `monitoring-pflege-api` | Required token audience and role client |
 | `OIDC_CLIENT_SECRET` | no default | Confidential frontend client secret |
-| `OIDC_COOKIE_SECRET` | no default | Streamlit session-signing secret |
+| `BFF_SESSION_ENCRYPTION_KEY` | no default | Fernet key for OAuth tokens held in the server-side session |
+| `BFF_COOKIE_SECURE` | `false` locally | Must be set to `true` behind TLS |
 | `DEMO_USER_PASSWORD` | no default | Temporary local demo-user password |
 
 All required values are documented in [.env.example](.env.example). Real secrets belong only in the ignored `.env` file.
@@ -399,10 +407,10 @@ backend/
 		fhir_ml/                FHIR client and ML risk logic
 		models/                 Pydantic input models
 frontend/
-	app.py                    Streamlit dashboard
-	application/              UI data transformations
-	domain/                   UI data models
-	infrastructure/           Backend API client
+	src/                      React app, features, domain models, and API adapters
+	tests/                    Vitest tests for critical frontend logic
+	nginx.conf                Same-origin gateway and SPA delivery
+	package.json              Node dependencies and verification scripts
 docker-compose.yml          Complete stack: PostgreSQL, HAPI, backend, frontend
 requirements.txt            Python dependencies
 ```
@@ -410,7 +418,13 @@ requirements.txt            Python dependencies
 ### Validation
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile frontend/app.py backend/app/main.py
+.\.venv\Scripts\python.exe -m py_compile backend/app/main.py
+Push-Location frontend
+npm.cmd ci
+npm.cmd run lint
+npm.cmd test
+npm.cmd run build
+Pop-Location
 docker compose config
 docker compose build backend frontend
 docker compose up -d

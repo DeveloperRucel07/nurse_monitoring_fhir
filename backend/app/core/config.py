@@ -16,3 +16,15 @@ if ML_MODE not in {"disabled", "synthetic-demo"}:
     raise RuntimeError("ML_MODE must be either 'disabled' or 'synthetic-demo'")
 
 APP_ORIGIN = os.getenv("APP_ORIGIN", "http://localhost:8501").rstrip("/")
+PATIENT_IDENTIFIER_SYSTEM = os.getenv(
+    "PATIENT_IDENTIFIER_SYSTEM",
+    "https://monitoring-pflege.local/identifier/patient",
+)
+ENCOUNTER_IDENTIFIER_SYSTEM = os.getenv(
+    "ENCOUNTER_IDENTIFIER_SYSTEM",
+    "https://monitoring-pflege.local/identifier/encounter",
+)
+NURSING_REPORT_IDENTIFIER_SYSTEM = os.getenv(
+    "NURSING_REPORT_IDENTIFIER_SYSTEM",
+    "https://monitoring-pflege.local/identifier/nursing-report",
+)

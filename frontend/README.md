@@ -28,9 +28,9 @@ Storage persistiert; Patientenkontexte und Suchkriterien stehen nicht in URLs.
 
 ## Pflegefunktionen
 
-Benutzer mit der Rolle `pflege_write` können im React-Frontend Patienten aufnehmen, unterstützte Vitalparameter dokumentieren und Pflegeberichte als FHIR `ClinicalImpression` speichern. Benutzer mit reinen Leserechten sehen keine Schreibformulare. Das Backend prüft die Rolle bei jeder Mutation erneut und ordnet Vitalparameter ausschließlich über fest definierte LOINC-/UCUM-Mappings zu.
+Benutzer mit der Rolle `pflege_write` können im React-Frontend Patienten samt aktivem FHIR `Encounter` aufnehmen, Vitalparameter, Mobilität und Sturzanamnese dokumentieren und Pflegeberichte als FHIR `Composition` speichern. Benutzer mit reinen Leserechten sehen keine Schreibformulare. Das Backend prüft die Rolle bei jeder Mutation erneut und ordnet Assessments ausschließlich über fest definierte LOINC-/UCUM-Mappings zu.
 
-Die Patientenaufnahme erzeugt aktuell nur die logische FHIR-ID. Eine organisationsweit stabile Patienten- oder Fallnummer ist noch nicht implementiert; die Oberfläche weist deshalb vor dem Speichern auf Identitäts- und Dublettenprüfung hin.
+Die Aufnahme erzeugt serverseitig eine stabile organisationslokale Patienten- und Fallkennung und speichert Patient und Encounter atomar. Pflegeberichte sind an den aktiven Fall und den angemeldeten Autor gebunden. Korrekturen erzeugen über `If-Match` eine neue FHIR-Version; fehlerhafte Berichte werden nicht gelöscht, sondern nachvollziehbar als `entered-in-error` markiert.
 
 ## Lokale Frontend-Prüfungen
 

@@ -1,4 +1,7 @@
+import html
 import math
+import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -7,11 +10,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.app.auth import auth_app
-from backend.app.core.config import ML_MODE
-from backend.app.core.exceptions import FhirClientError
+from backend.app.core.config import (
+    ENCOUNTER_IDENTIFIER_SYSTEM,
+    ML_MODE,
+    NURSING_REPORT_IDENTIFIER_SYSTEM,
+    PATIENT_IDENTIFIER_SYSTEM,
+)
+from backend.app.core.exceptions import FhirBadGatewayError, FhirClientError
 from backend.app.core.logging import AuditMiddleware
 from backend.app.core.security import (
+    KEYCLOAK_ISSUER,
+    client_roles,
     get_current_client,
+    require_admin_access,
     require_delete_access,
     require_read_access,
     require_write_access,
@@ -22,8 +33,11 @@ from backend.app.models.models import (
     ClinicalRecordCreate,
     ClinicalRecordSearch,
     ClinicalRecordType,
+    NursingReportCorrection,
     NursingReportCreate,
+    NursingReportErrorMark,
     ObservationCreate,
+    PatientAdmissionCreate,
     PatientContextRequest,
     PatientCreate,
     PatientSearch,
@@ -100,7 +114,7 @@ RISK_DISPLAYS = {
 @app.post(
     "/Patient",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_write_access)],
+    dependencies=[Depends(require_admin_access)],
 )
 def create_patient(patient: PatientCreate):
     """Legt einen neuen Patienten im FHIR-Server an."""
@@ -109,13 +123,103 @@ def create_patient(patient: PatientCreate):
     return fhir.create_patient(patient_data)
 
 
+def _generated_identifier(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex.upper()}"
+
+
+def _transaction_resource(
+    response_bundle: Dict[str, Any], index: int, resource_type: str
+) -> Dict[str, Any]:
+    entries = response_bundle.get("entry")
+    if not isinstance(entries, list) or index >= len(entries):
+        raise FhirBadGatewayError("FHIR-Transaktionsantwort ist unvollständig.")
+    entry = entries[index]
+    if not isinstance(entry, dict):
+        raise FhirBadGatewayError("FHIR-Transaktionsantwort ist ungültig.")
+    resource = entry.get("resource")
+    if isinstance(resource, dict) and resource.get("resourceType") == resource_type:
+        return resource
+    response = entry.get("response")
+    location = response.get("location") if isinstance(response, dict) else None
+    match = re.fullmatch(
+        rf"{resource_type}/([A-Za-z0-9.-]{{1,64}})(?:/_history/[^/]+)?", str(location)
+    )
+    if not match:
+        raise FhirBadGatewayError("FHIR-Transaktionsantwort enthält keine Ressource.")
+    return fhir.get_resource(resource_type, match.group(1))
+
+
+@app.post(
+    "/ui/patients/admit",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_write_access)],
+)
+def admit_patient_for_ui(admission: PatientAdmissionCreate):
+    """Atomically creates a patient and an inpatient encounter with identifiers."""
+    patient_full_url = f"urn:uuid:{uuid.uuid4()}"
+    patient_data = admission.model_dump(
+        mode="json", exclude={"admittedAt"}, exclude_none=True
+    )
+    patient_data.update(
+        {
+            "resourceType": "Patient",
+            "identifier": [
+                {
+                    "use": "official",
+                    "system": PATIENT_IDENTIFIER_SYSTEM,
+                    "value": _generated_identifier("PAT"),
+                }
+            ],
+        }
+    )
+    encounter_data = {
+        "resourceType": "Encounter",
+        "identifier": [
+            {
+                "use": "official",
+                "system": ENCOUNTER_IDENTIFIER_SYSTEM,
+                "value": _generated_identifier("FALL"),
+            }
+        ],
+        "status": "in-progress",
+        "class": {
+            "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+            "code": "IMP",
+            "display": "inpatient encounter",
+        },
+        "subject": {"reference": patient_full_url},
+        "period": {"start": admission.admittedAt.isoformat()},
+    }
+    transaction = {
+        "resourceType": "Bundle",
+        "type": "transaction",
+        "entry": [
+            {
+                "fullUrl": patient_full_url,
+                "resource": patient_data,
+                "request": {"method": "POST", "url": "Patient"},
+            },
+            {
+                "fullUrl": f"urn:uuid:{uuid.uuid4()}",
+                "resource": encounter_data,
+                "request": {"method": "POST", "url": "Encounter"},
+            },
+        ],
+    }
+    response_bundle = fhir.transaction(transaction)
+    return {
+        "patient": _transaction_resource(response_bundle, 0, "Patient"),
+        "encounter": _transaction_resource(response_bundle, 1, "Encounter"),
+    }
+
+
 @app.get("/Patient/{patient_id}", dependencies=[Depends(require_read_access)])
 def get_patient(patient_id: str):
     """Liest einen Patienten anhand seiner ID."""
     return fhir.get_patient(patient_id)
 
 
-@app.put("/Patient/{patient_id}", dependencies=[Depends(require_write_access)])
+@app.put("/Patient/{patient_id}", dependencies=[Depends(require_admin_access)])
 def update_patient(patient_id: str, patient: PatientCreate):
     """Aktualisiert die pflegerelevanten Stammdaten eines Patienten."""
     existing_patient = fhir.get_patient(patient_id)
@@ -170,6 +274,18 @@ def read_patient_for_ui(context: PatientContextRequest):
 @app.post("/ui/patient/observations", dependencies=[Depends(require_read_access)])
 def read_patient_observations_for_ui(context: PatientContextRequest):
     return fhir.search_observations(subject_reference=f"Patient/{context.patientId}")
+
+
+@app.post("/ui/patient/encounters", dependencies=[Depends(require_read_access)])
+def read_patient_encounters_for_ui(context: PatientContextRequest):
+    return fhir.search_resources("Encounter", context.patientId, "subject")
+
+
+@app.post(
+    "/ui/patient/nursing-reports/search", dependencies=[Depends(require_read_access)]
+)
+def read_patient_nursing_reports_for_ui(context: PatientContextRequest):
+    return fhir.search_resources("Composition", context.patientId, "subject")
 
 
 @app.post("/ui/patient/clinical-records", dependencies=[Depends(require_read_access)])
@@ -237,6 +353,11 @@ def _loinc_concept(code: str, display: str) -> Dict[str, Any]:
 
 
 def vital_measurement_resource(measurement: VitalMeasurementCreate) -> Dict[str, Any]:
+    category_code = (
+        "survey"
+        if measurement.measurementType in {"mobility", "fall-history", "morse-score"}
+        else "vital-signs"
+    )
     resource: Dict[str, Any] = {
         "resourceType": "Observation",
         "status": "final",
@@ -245,13 +366,16 @@ def vital_measurement_resource(measurement: VitalMeasurementCreate) -> Dict[str,
                 "coding": [
                     {
                         "system": "http://terminology.hl7.org/CodeSystem/observation-category",
-                        "code": "vital-signs",
-                        "display": "Vital Signs",
+                        "code": category_code,
+                        "display": (
+                            "Survey" if category_code == "survey" else "Vital Signs"
+                        ),
                     }
                 ]
             }
         ],
         "subject": {"reference": f"Patient/{measurement.patientId}"},
+        "encounter": {"reference": f"Encounter/{measurement.encounterId}"},
         "effectiveDateTime": measurement.measuredAt.isoformat(),
     }
 
@@ -279,6 +403,32 @@ def vital_measurement_resource(measurement: VitalMeasurementCreate) -> Dict[str,
         ]
         return resource
 
+    if measurement.measurementType in {"mobility", "fall-history"}:
+        concepts = {
+            "mobility": {
+                "code": "83186-7",
+                "display": "Ambulation - functional ability",
+                "answers": {
+                    "independent": ("LA12302-8", "Independent"),
+                    "needs-help": ("LA12303-6", "Needed some help"),
+                    "dependent": ("LA12304-4", "Dependent"),
+                },
+            },
+            "fall-history": {
+                "code": "59454-9",
+                "display": "History of falling; immediate or within 3 months [Morse Fall Scale]",
+                "answers": {
+                    "no": ("LA32-8", "No"),
+                    "yes": ("LA33-6", "Yes"),
+                },
+            },
+        }
+        definition = concepts[measurement.measurementType]
+        answer_code, answer_display = definition["answers"][measurement.codedValue]
+        resource["code"] = _loinc_concept(definition["code"], definition["display"])
+        resource["valueCodeableConcept"] = _loinc_concept(answer_code, answer_display)
+        return resource
+
     definition = VITAL_MEASUREMENT_DEFINITIONS[measurement.measurementType]
     resource["code"] = _loinc_concept(definition["code"], definition["display"])
     resource["valueQuantity"] = {
@@ -297,24 +447,203 @@ def vital_measurement_resource(measurement: VitalMeasurementCreate) -> Dict[str,
 )
 def create_vital_measurement_for_ui(measurement: VitalMeasurementCreate):
     """Creates a vital sign using server-controlled LOINC and UCUM metadata."""
+    _require_patient_encounter(measurement.patientId, measurement.encounterId)
     return fhir.create_observation(vital_measurement_resource(measurement))
 
 
 @app.post(
     "/ui/patient/nursing-reports",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_write_access)],
 )
-def create_nursing_report_for_ui(report: NursingReportCreate):
-    """Stores a plain-text nursing note without placing identifiers in the URL."""
-    record = ClinicalRecordCreate(
-        display=report.title,
-        status="completed",
-        details=report.text,
+def create_nursing_report_for_ui(
+    report: NursingReportCreate,
+    claims: Dict[str, Any] = Depends(require_write_access),
+):
+    """Stores an authored, encounter-bound and versioned nursing Composition."""
+    _require_patient_encounter(report.patientId, report.encounterId)
+    resource = _nursing_composition(
+        patient_id=report.patientId,
+        encounter_id=report.encounterId,
+        title=report.title,
+        text=report.text,
+        claims=claims,
+        status_code="final",
     )
-    return fhir.create_resource(
-        "ClinicalImpression",
-        clinical_resource(report.patientId, "ClinicalImpression", record),
+    return fhir.create_resource("Composition", resource)
+
+
+def _author_reference(claims: Dict[str, Any]) -> Dict[str, Any]:
+    subject = str(claims["sub"])[:200]
+    display = str(
+        claims.get("name") or claims.get("preferred_username") or "Pflegefachkraft"
+    )[:200]
+    return {
+        "type": "Practitioner",
+        "identifier": {
+            "system": f"{KEYCLOAK_ISSUER}/subjects",
+            "value": subject,
+        },
+        "display": display,
+    }
+
+
+def _require_patient_encounter(patient_id: str, encounter_id: str) -> Dict[str, Any]:
+    encounter = fhir.get_resource("Encounter", encounter_id)
+    if (encounter.get("subject") or {}).get("reference") != f"Patient/{patient_id}":
+        raise HTTPException(status_code=404, detail="Fallkontext nicht gefunden.")
+    if encounter.get("status") not in {"arrived", "triaged", "in-progress", "onleave"}:
+        raise HTTPException(status_code=409, detail="Der Fall ist nicht aktiv.")
+    return encounter
+
+
+def _narrative(text: str) -> Dict[str, str]:
+    escaped = html.escape(text, quote=False).replace("\n", "<br/>")
+    return {
+        "status": "generated",
+        "div": f'<div xmlns="http://www.w3.org/1999/xhtml"><p>{escaped}</p></div>',
+    }
+
+
+def _nursing_composition(
+    *,
+    patient_id: str,
+    encounter_id: str,
+    title: str,
+    text: str,
+    claims: Dict[str, Any],
+    status_code: str,
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    author = _author_reference(claims)
+    return {
+        "resourceType": "Composition",
+        "identifier": {
+            "system": NURSING_REPORT_IDENTIFIER_SYSTEM,
+            "value": _generated_identifier("BERICHT"),
+        },
+        "status": status_code,
+        "type": _loinc_concept("34746-8", "Nurse Note"),
+        "subject": {"reference": f"Patient/{patient_id}"},
+        "encounter": {"reference": f"Encounter/{encounter_id}"},
+        "date": now,
+        "author": [author],
+        "title": title,
+        "attester": [{"mode": "professional", "time": now, "party": author}],
+        "section": [
+            {
+                "title": title,
+                "author": [author],
+                "text": _narrative(text),
+            }
+        ],
+    }
+
+
+def _require_report_access(
+    current: Dict[str, Any], patient_id: str, claims: Dict[str, Any]
+) -> None:
+    if (current.get("subject") or {}).get("reference") != f"Patient/{patient_id}":
+        raise HTTPException(status_code=404, detail="Pflegebericht nicht gefunden.")
+    if "pflege_admin" in client_roles(claims):
+        return
+    subject = str(claims["sub"])
+    authors = current.get("author")
+    if not isinstance(authors, list) or not any(
+        isinstance(author, dict)
+        and isinstance(author.get("identifier"), dict)
+        and author["identifier"].get("value") == subject
+        for author in authors
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Nur Autorinnen, Autoren oder Administration dürfen korrigieren.",
+        )
+
+
+def _append_author(current: Dict[str, Any], author: Dict[str, Any]) -> None:
+    authors = current.get("author")
+    if not isinstance(authors, list):
+        authors = []
+    value = author["identifier"]["value"]
+    if not any(
+        isinstance(item, dict)
+        and isinstance(item.get("identifier"), dict)
+        and item["identifier"].get("value") == value
+        for item in authors
+    ):
+        authors.append(author)
+    current["author"] = authors
+
+
+@app.put("/ui/patient/nursing-reports")
+def correct_nursing_report_for_ui(
+    correction: NursingReportCorrection,
+    claims: Dict[str, Any] = Depends(require_write_access),
+):
+    current = fhir.get_resource("Composition", correction.reportId)
+    _require_report_access(current, correction.patientId, claims)
+    if current.get("status") == "entered-in-error":
+        raise HTTPException(
+            status_code=409, detail="Fehlerhafter Bericht ist gesperrt."
+        )
+    current_version = (current.get("meta") or {}).get("versionId")
+    if current_version != correction.expectedVersionId:
+        raise HTTPException(
+            status_code=409, detail="Der Bericht wurde bereits geändert."
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    author = _author_reference(claims)
+    current.update(
+        {
+            "status": "amended",
+            "date": now,
+            "title": correction.title,
+            "attester": [{"mode": "professional", "time": now, "party": author}],
+            "section": [
+                {
+                    "title": correction.title,
+                    "author": [author],
+                    "text": _narrative(correction.text),
+                }
+            ],
+        }
+    )
+    _append_author(current, author)
+    return fhir.update_resource(
+        "Composition",
+        correction.reportId,
+        current,
+        expected_version_id=correction.expectedVersionId,
+    )
+
+
+@app.post("/ui/patient/nursing-reports/entered-in-error")
+def mark_nursing_report_entered_in_error_for_ui(
+    mark: NursingReportErrorMark,
+    claims: Dict[str, Any] = Depends(require_write_access),
+):
+    current = fhir.get_resource("Composition", mark.reportId)
+    _require_report_access(current, mark.patientId, claims)
+    current_version = (current.get("meta") or {}).get("versionId")
+    if current_version != mark.expectedVersionId:
+        raise HTTPException(
+            status_code=409, detail="Der Bericht wurde bereits geändert."
+        )
+    author = _author_reference(claims)
+    current["status"] = "entered-in-error"
+    current["date"] = datetime.now(timezone.utc).isoformat()
+    current.setdefault("extension", []).append(
+        {
+            "url": "https://monitoring-pflege.local/fhir/StructureDefinition/error-reason",
+            "valueString": mark.reason,
+        }
+    )
+    _append_author(current, author)
+    return fhir.update_resource(
+        "Composition",
+        mark.reportId,
+        current,
+        expected_version_id=mark.expectedVersionId,
     )
 
 
@@ -324,7 +653,7 @@ def create_nursing_report_for_ui(report: NursingReportCreate):
 @app.post(
     "/Observation",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_write_access)],
+    dependencies=[Depends(require_admin_access)],
 )
 def create_observation(observation: ObservationCreate):
     """Legt eine neue Observation im FHIR-Server an."""
@@ -355,7 +684,7 @@ def search_observations(
 
 @app.patch(
     "/Observation/{observation_id}",
-    dependencies=[Depends(require_write_access)],
+    dependencies=[Depends(require_admin_access)],
 )
 def patch_observation(observation_id: str, patch: List[Dict[str, Any]]):
     """
@@ -460,7 +789,7 @@ def clinical_resource(
 @app.post(
     "/Patient/{patient_id}/clinical-records/{record_type}",
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_write_access)],
+    dependencies=[Depends(require_admin_access)],
 )
 def create_clinical_record(
     patient_id: str,

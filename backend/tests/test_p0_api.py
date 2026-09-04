@@ -37,7 +37,7 @@ def test_fhir_errors_are_returned_as_operation_outcome(monkeypatch) -> None:
             )
 
     main.app.dependency_overrides[security.get_current_client] = lambda: claims(
-        "pflege_write"
+        "pflege_admin"
     )
     monkeypatch.setattr(main, "fhir", InvalidFhir())
 
@@ -54,7 +54,7 @@ def test_fhir_errors_are_returned_as_operation_outcome(monkeypatch) -> None:
 
 def test_invalid_api_input_is_returned_as_operation_outcome() -> None:
     main.app.dependency_overrides[security.get_current_client] = lambda: claims(
-        "pflege_write"
+        "pflege_admin"
     )
 
     response = TestClient(main.app).post(

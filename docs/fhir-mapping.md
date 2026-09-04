@@ -6,7 +6,9 @@ Status: React-Mapping und sichere Pflege-Schreibverträge implementiert.
 
 | Ressource | Lesen | Schreiben | Aktueller Backend-Pfad | Einschränkung |
 | --- | --- | --- | --- | --- |
-| `Patient` | Liste/Detail | Create, Update, Delete | `/Patient`, `/Patient/{id}` | Keine Station-/Zimmer-Abbildung, keine stabile Identifier-Strategie. |
+| `Patient` | Liste/Detail | Create, Update, Delete | `/Patient`, `/Patient/{id}` | Aufnahme-Workflow erzeugt zusätzlich eine stabile organisationslokale Kennung. |
+| `Encounter` | patientenbezogene Liste | Atomar mit Aufnahme | `/ui/patients/admit`, `/ui/patient/encounters` | Aktiver stationärer Fall mit stabiler Fallkennung; Location/Station ist noch nicht angebunden. |
+| `Composition` | patientenbezogene Liste | Create, Korrektur, entered-in-error | `/ui/patient/nursing-reports*` | Pflegebericht mit LOINC `34746-8`, Autor, Encounter, FHIR-Version und optimistischer Nebenläufigkeitskontrolle. |
 | `Observation` | Liste/Detail | Create, Status-Patch, Delete | `/Observation`, `/Observation/{id}` | Rohe FHIR-Antwort; keine Response-Schemas in OpenAPI. |
 | `Condition` | patientenbezogene Liste | Create | `/Patient/{id}/clinical-records/Condition` | Generisches, vereinfachtes Schreibmodell. |
 | `CarePlan` | patientenbezogene Liste | Create | `/Patient/{id}/clinical-records/CarePlan` | Generisches Schreibmodell bildet CarePlan nur teilweise ab. |
@@ -24,10 +26,14 @@ Das React-Frontend verwendet für klinische Schreibvorgänge schmale UI-Endpunkt
 | Funktion | UI-Endpunkt | FHIR-Ergebnis | Sicherheitsgrenze |
 | --- | --- | --- | --- |
 | Vitalparameter erfassen | `POST /ui/patient/vital-measurements` | `Observation` | Messart wird serverseitig auf feste LOINC-/UCUM-Werte abgebildet; Wertebereiche, Zeitzone und Patient-ID werden serverseitig validiert. |
-| Pflegebericht schreiben | `POST /ui/patient/nursing-reports` | `ClinicalImpression` | Nur Klartext bis 4.000 Zeichen; kein Narrative HTML; Schreibrolle erforderlich. |
-| Patient aufnehmen | `POST /Patient` | `Patient` | Keine erfundene Patientenkennung; Namen und Geburtsdatum werden serverseitig validiert; Schreibrolle erforderlich. |
+| Pflegebericht schreiben | `POST /ui/patient/nursing-reports` | `Composition` | LOINC `34746-8`, Autor aus verifizierter Sitzung, aktiver Encounter und serverseitig escaped XHTML Narrative. |
+| Pflegebericht korrigieren | `PUT /ui/patient/nursing-reports` | neue Version derselben `Composition` | `If-Match`/`meta.versionId`; nur Autor oder `pflege_admin`; Status `amended`. |
+| Pflegebericht als fehlerhaft markieren | `POST /ui/patient/nursing-reports/entered-in-error` | neue Version derselben `Composition` | Kein Löschen; Status `entered-in-error` und verpflichtender Grund. |
+| Patient aufnehmen | `POST /ui/patients/admit` | atomare Transaktion aus `Patient` und `Encounter` | Servergenerierte Patienten- und Fallkennung; entweder beide Ressourcen werden gespeichert oder keine. |
 
 Die Eingabegrenzen für Vitalwerte sind Schutz gegen Übertragungs- und Eingabefehler, keine klinischen Normalbereiche und keine automatische Bewertung. Autorisierung, FHIR-Validierung und Code-/Einheitenzuordnung bleiben Backend-Aufgaben.
+
+Die generischen Roh-FHIR-Schreibpfade für `Patient`, `Observation` und klinische Ressourcen sind auf `pflege_admin` begrenzt. `pflege_write` darf klinische Daten ausschließlich über die engen, serverseitig gemappten Pflegeverträge erzeugen und kann deren Terminologie daher nicht über manipulierte Browseranfragen ersetzen.
 
 ## Vitalzeichen-Codes im Bestand
 
@@ -40,12 +46,13 @@ Die folgenden Codes werden vom bestehenden Backend beziehungsweise Seed verwende
 | Systolisch | LOINC `8480-6` | Component `valueQuantity` |
 | Diastolisch | LOINC `8462-4` | Component `valueQuantity` |
 | Körpertemperatur | LOINC `8310-5` | `Observation.valueQuantity` |
-| Mobilität | LOINC `83186-7` | aktuell `valueCodeableConcept` oder Quantity |
+| Mobilität | LOINC `83186-7` | `valueCodeableConcept` mit `LA12302-8`, `LA12303-6` oder `LA12304-4` |
+| Sturzanamnese im Morse-Kontext | LOINC `59454-9` | `valueCodeableConcept` mit `LA32-8` oder `LA33-6` |
 | Morse-Gesamtscore | LOINC `59460-6` | `Observation.valueQuantity` |
 | Morse-Risikostufe | LOINC `59461-4` | `Observation.valueCodeableConcept` |
 | Morse-Gangbild | LOINC `59458-0` | `Observation.valueCodeableConcept` |
 
-Eine eigenständige Sturzanamnese ist im aktuellen Vertrag nicht vorhanden und wird nicht aus dem Morse-Score abgeleitet.
+Die Sturzanamnese bezieht sich ausdrücklich auf „unmittelbar oder innerhalb von drei Monaten“ im Morse-Kontext. Sie wird als eigener Messwert dokumentiert und nicht aus dem Gesamtscore abgeleitet.
 
 ## Schmale FHIR DTOs
 
